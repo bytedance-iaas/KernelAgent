@@ -40,6 +40,9 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov",
+    "flashinfer-python",
+    "flashinfer-cubin",
+    "flashinfer-jit-cache"
 ]
 
 [project.scripts]
