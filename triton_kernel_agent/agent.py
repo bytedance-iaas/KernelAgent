@@ -42,9 +42,9 @@ class TritonKernelAgent:
         high_reasoning_effort: bool = True,
         preferred_provider: BaseProvider | None = None,
         target_platform: PlatformConfig | None = None,
-        kernel_backend: str = "triton",
         no_cusolver: bool = False,
         test_timeout_s: int = 30,
+        kernel_language: str = "triton",
     ):
         """
         Initialize the Triton Kernel Agent.
@@ -56,8 +56,8 @@ class TritonKernelAgent:
             model_name: OpenAI model to use (loaded from .env if None)
             high_reasoning_effort: Whether to use high reasoning effort for OpenAI models
             target_platform: Target platform PlatformConfig
-            kernel_backend: Kernel source backend to generate (triton or cutedsl)
             no_cusolver: If True, disables cuSolver library usage
+            kernel_language: Kernel DSL ("triton" or "cutedsl")
         """
         # Load environment variables
         load_dotenv()
@@ -94,8 +94,8 @@ class TritonKernelAgent:
             target_platform if target_platform else get_platform("cuda")
         )
         self.no_cusolver = no_cusolver
-        self.kernel_backend = kernel_backend
         self.test_timeout_s = test_timeout_s
+        self.kernel_language = kernel_language
 
         # Setup main logger
         self._setup_logging()
@@ -103,7 +103,7 @@ class TritonKernelAgent:
         # Initialize prompt manager
         self.prompt_manager = PromptManager(
             target_platform=target_platform,
-            kernel_backend=self.kernel_backend,
+            kernel_language=self.kernel_language,
         )
 
         # Initialize worker manager
@@ -115,9 +115,9 @@ class TritonKernelAgent:
             openai_model=self.model_name,
             high_reasoning_effort=self.high_reasoning_effort,
             target_platform=self._platform_config.name,
-            kernel_backend=self.kernel_backend,
             no_cusolver=self.no_cusolver,
             test_timeout_s=self.test_timeout_s,
+            kernel_language=self.kernel_language,
         )
 
     def _setup_logging(self):

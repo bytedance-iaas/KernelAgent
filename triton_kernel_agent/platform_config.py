@@ -76,6 +76,94 @@ _XPU_CUDA_HACKS = (
     "XPUDriver.is_available = classmethod(lambda cls: False)",
 )
 
+_CUTEDSL_GUIDANCE = """\
+**CRITICAL REQUIREMENTS FOR CuteDSL KERNELS:**
+- Import: `import cutlass; import cutlass.cute as cute`
+- TWO-FUNCTION PATTERN (mandatory):
+    1. `@cute.kernel` — GPU-side function, args typed as `cute.Tensor`
+    2. `@cute.jit`    — host-side launcher, calls `kernel(...).launch(grid=..., block=...)`
+  `cute.compile()` MUST target the `@cute.jit` function, NOT the bare `@cute.kernel`.
+- Convert PyTorch tensors: `from_dlpack(tensor, assumed_align=16)`
+  (call `.contiguous()` first if needed; do this in the Python wrapper, not the kernel)
+- Inside `@cute.kernel`, index tensors directly: `gA[i]`, `gA[row, col]`
+- Compile-time constants inside the kernel: `BLK: cutlass.Constexpr = 256`
+- Shared memory: `cute.arch.alloc_smem(Float32, N)` where N is a plain Python int
+  (module-level constant). Wrap result with `cute.make_tensor(ptr, cute.make_layout(N))`
+  before indexing with runtime values.
+- Type casts: `cutlass.BFloat16(f32_val)`, `Float32(bf16_val)`, `cutlass.Int32(x)`
+- Thread indexing: `tid_x, _, _ = cute.arch.thread_idx()` (returns 3-tuple)
+- Warp reduction: `acc = cute.arch.warp_reduction_sum(acc)` for FP32 sum
+- Compile-time loops: `for i in cutlass.range_constexpr(N):` (N must be Python int)
+- Expose `kernel_function(*args) -> torch.Tensor` that caches and calls the compiled host fn
+- Do NOT import or call any Triton APIs (`triton`, `triton.language`, `tl.*`)"""
+
+_CUTEDSL_KERNEL_GUIDANCE = """\
+## CuteDSL Optimization Guidelines
+
+You are generating a CuteDSL kernel. Follow these patterns exactly.
+
+1. **Required imports**
+   ```python
+   import torch
+   import cutlass
+   import cutlass.cute as cute
+   from cutlass import Float32, BFloat16, Int32
+   from cutlass.cute.runtime import from_dlpack
+   ```
+
+2. **Two-function structure** (MANDATORY — cute.compile targets @cute.jit, not @cute.kernel)
+   ```python
+   @cute.kernel
+   def _kernel(gA: cute.Tensor, gOut: cute.Tensor):
+       BLK: cutlass.Constexpr = _BLK   # compile-time constant from module level
+       tid_x, _, _ = cute.arch.thread_idx()
+       bid_x, _, _ = cute.arch.block_idx()
+       ...
+
+   @cute.jit
+   def _host(gA: cute.Tensor, gOut: cute.Tensor):
+       M = gA.shape[0]
+       _kernel(gA, gOut).launch(grid=(M, 1, 1), block=(_BLK, 1, 1))
+
+   _COMPILE_CACHE: dict = {}
+   def kernel_function(A: torch.Tensor) -> torch.Tensor:
+       A   = A.contiguous()
+       Out = torch.empty_like(A)
+       mA, mOut = from_dlpack(A, assumed_align=16), from_dlpack(Out, assumed_align=16)
+       key = (A.shape, A.dtype)
+       if key not in _COMPILE_CACHE:
+           _COMPILE_CACHE[key] = cute.compile(_host, mA, mOut)
+       _COMPILE_CACHE[key](mA, mOut)
+       return Out
+   ```
+
+3. **Shared memory** — size argument MUST be a plain Python int
+   ```python
+   _WARPS = 8   # module-level Python int, not cutlass.Constexpr
+
+   smem_ptr = cute.arch.alloc_smem(Float32, _WARPS)          # plain int required
+   smem     = cute.make_tensor(smem_ptr, cute.make_layout(_WARPS))  # wrap for runtime indexing
+   smem[warp_id] = acc      # warp_id is runtime — OK via cute.Tensor
+   cute.arch.sync_threads()
+   ```
+
+4. **Warp reduction and type casting**
+   ```python
+   acc = cute.arch.warp_reduction_sum(acc)   # FP32 butterfly reduction
+   gOut[row] = cutlass.BFloat16(acc)         # FP32 → BF16 cast
+   ```
+
+5. **Compile-time loops** — argument must be a plain Python int
+   ```python
+   for i in cutlass.range_constexpr(_WARPS):   # compiler-unrolled
+       total = total + smem[i]
+   ```
+
+6. **Tile sizes and thread counts**: powers of 2 (64, 128, 256)
+7. **Prefer persistent kernels** for memory-bandwidth-bound ops
+8. **Use TMEM** (SM100) for MMA accumulators; avoid stores until epilogue"""
+
+
 # Platform registry
 PLATFORMS: dict[str, PlatformConfig] = {
     "cuda": PlatformConfig(
@@ -83,6 +171,13 @@ PLATFORMS: dict[str, PlatformConfig] = {
         device_string="cuda",
         guidance_block="",
         kernel_guidance="",
+        cuda_hacks_to_strip=(),
+    ),
+    "cutedsl": PlatformConfig(
+        name="cutedsl",
+        device_string="cuda",
+        guidance_block=_CUTEDSL_GUIDANCE,
+        kernel_guidance=_CUTEDSL_KERNEL_GUIDANCE,
         cuda_hacks_to_strip=(),
     ),
     "xpu": PlatformConfig(

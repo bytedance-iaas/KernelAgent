@@ -12,7 +12,7 @@ verify correctness and iteratively fix any issues.
 - `KERNEL_PATH`: Path to `kernel.py`
 - `TEST_PATH`: Path to `test_kernel.py`
 - `PROBLEM_DESCRIPTION`: The original problem description (for refinement context)
-- `KERNEL_BACKEND`: `triton` (default), `tilelang`, or `cutedsl`
+- `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 - `MAX_ROUNDS`: Maximum refinement iterations (default: 10)
 - `WORKDIR`: Working directory containing kernel.py and test_kernel.py
 
@@ -20,7 +20,7 @@ verify correctness and iteratively fix any issues.
 
 ### Step 1: Initial Verification
 
-First, scan the kernel code for **disallowed patterns** (apply to all backends):
+First, scan the kernel code for **disallowed patterns** (apply to all languages):
 - `import torch.nn` or `from torch import nn`
 - `torch.nn.functional` or `F.*` calls
 - `torch.conv*`, `torch.relu`, `torch.sigmoid`, `torch.tanh`, `torch.softmax`
@@ -29,10 +29,10 @@ First, scan the kernel code for **disallowed patterns** (apply to all backends):
 - `class ... (nn.Module)` or `.forward()` calls
 - `import inspect`, `sys._getframe`, `globals()`, `locals()`
 
-Also check for **backend cross-contamination** — the kernel must only use its own backend:
-- If `KERNEL_BACKEND=tilelang`: must NOT import `triton` or `cutlass`
-- If `KERNEL_BACKEND=cutedsl`: must NOT import `triton` or `tilelang`
-- If `KERNEL_BACKEND=triton`: must NOT import `tilelang` or `cutlass`
+Also check for **language cross-contamination** — the kernel must only use its own language:
+- If `KERNEL_LANGUAGE=tilelang`: must NOT import `triton` or `cutlass`
+- If `KERNEL_LANGUAGE=cutedsl`: must NOT import `triton` or `tilelang`
+- If `KERNEL_LANGUAGE=triton`: must NOT import `tilelang` or `cutlass`
 
 If any pattern is found, treat it as a failure with the message:
 `"Disallowed usage detected: <pattern description>"`
@@ -50,7 +50,7 @@ Parse the JSON output. If `"passed": true`, the kernel is verified — stop.
 If the test fails, read the `stderr_tail` and `stdout_tail` from the result.
 
 **Build refinement context:**
-- Include the backend guidelines (from `render_template.py --template backend_guidelines --vars '{"kernel_backend": "$KERNEL_BACKEND"}'`)
+- Include the language guidelines (from `render_template.py --template language_guidelines --vars '{"kernel_language": "$KERNEL_LANGUAGE"}'`)
 - Include the test code
 - Include the current kernel code
 - Include the error output
@@ -67,7 +67,7 @@ If the test fails, read the `stderr_tail` and `stdout_tail` from the result.
 7. **Fusion priority:** Preserve or extend operation fusion; never intentionally unfuse unless documented
 8. Keep the wrapper free of PyTorch compute primitives
 
-**Common pitfalls by backend:**
+**Common pitfalls by language:**
 - **triton**: `tl.broadcast(0.0, ...)` → just use `0.0` directly; missing masks on boundary loads/stores; wrong grid dimension calculations; type mismatches between kernel parameters
 - **tilelang**: forgetting `lru_cache` on the builder; wrong `T.Kernel` block/grid shapes; incorrect `T.prim_func` buffer declarations
 - **cutedsl**: forgetting `.mark_layout_dynamic()` on CuTe tensors; wrong `grid`/`block` dimensions; `from_dlpack` called on non-contiguous tensors

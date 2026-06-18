@@ -68,7 +68,43 @@ TRITON KERNEL PROGRAMMING GUIDELINES:
    - Multi-stage pipelines with num_stages
    - Warp specialization with warp_specialize parameter
 
-7. RUNTIME CONSTRAINTS:
+7. GRID SIZING & WAVE SCHEDULING (CRITICAL FOR PERFORMANCE):
+   Grid size (total number of blocks) has a major impact on throughput independent
+   of per-block memory access efficiency. Get this right before tuning anything else.
+
+   a) TOO FEW BLOCKS — most common mistake for reduction/GEMV kernels:
+      - Symptom: sm__warps_active << 50%, "Warp Active" NCU metric is low,
+        OR launch__grid_dim_x is very small (e.g., 16 blocks for M=2048).
+      - Root cause: Only a fraction of SMs are active; memory latency cannot be
+        hidden because there are too few warps in flight.
+      - Fix: Reduce tile size (BLOCK_M or BLOCK_N) so that
+        grid_size = ceil(M / BLOCK_M) reaches 4–8× SM count.
+        Example for H200 (132 SMs): target 500–1100 blocks.
+        For GEMV with M=2048: BLOCK_M=1 gives grid=2048 (ideal).
+
+   b) TOO MANY BLOCKS — common mistake in K-split / 2-pass designs:
+      - Symptom: NCU per-block metrics look healthy (good DRAM throughput,
+        good warp utilization) but wall-clock time is much worse than expected.
+        launch__grid_dim_x × launch__grid_dim_y is very large (>> 10× SM count).
+      - Root cause: Blocks execute in sequential "waves". Each wave has ~15 µs
+        scheduling overhead. With 16 384 blocks and 132 SMs (4 blocks/SM = 528
+        concurrent), you get ~31 waves × 15 µs ≈ 465 µs of pure overhead.
+        This overhead is invisible in per-kernel NCU metrics.
+      - Fix: Reduce SPLIT_K or increase tile size so total blocks ≤ 4–8× SM count.
+        Do NOT add K-split unless the block count stays within 2–4 waves.
+
+   c) PRACTICAL TARGETS (per GPU):
+      - H200 (132 SMs, 4 blocks/SM): 500–1100 blocks → 1–2 waves
+      - H100 (108 SMs, 4 blocks/SM): 400–900 blocks → 1–2 waves
+      - Use torch.cuda.get_device_properties("cuda").multi_processor_count
+        at runtime to get SM count instead of hardcoding.
+
+   d) OCCUPANCY FORMULA:
+      occupancy = (blocks_per_SM × warps_per_block) / max_warps_per_SM
+      Target ≥ 50% occupancy to hide HBM latency (~200 ns per cache line).
+      Increase num_warps or grid size to reach this threshold.
+
+8. RUNTIME CONSTRAINTS:
    - Wrappers: validate/allocate/launch only; no math.
    - All compute runs in Triton kernels; no torch.nn, torch.nn.functional (e.g., F.*), or other PyTorch compute ops, including general tensor-tensor math like torch.matmul/mm/bmm/einsum or their Tensor method forms, and no low-level torch.ops.aten.* calls (e.g., torch.ops.aten.conv2d, torch.ops.aten.layer_norm, torch.ops.aten.addmm, torch.ops.aten.mean).
    - PyTorch allowed only for allocation, dtype/device checks, and packaging results.

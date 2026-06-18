@@ -15,7 +15,7 @@ as the final step of the Fuser pipeline.
 - `KERNEL_FILES`: List of verified kernel file paths (one per subgraph)
 - `OUT_DIR`: Output directory for composed artifacts
 - `TARGET_PLATFORM`: `cuda` or `xpu` (default: `cuda`)
-- `KERNEL_BACKEND`: `triton` (default), `tilelang`, or `cutedsl`
+- `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 - `MAX_ITERS`: Maximum composition refinement rounds (default: 5)
 - `VERIFY`: Whether to verify the composed kernel (default: true)
 
@@ -35,21 +35,21 @@ Generate ONE complete Python file that:
 **HARD REQUIREMENTS:**
 - Exposes a top-level wrapper named `kernel_function(...)`
 - `kernel_function` accepts the same primary input tensor(s) as the original model plus any required weights/biases
-- Orchestrates backend kernel(s) to produce the final output tensor
-- **NO PyTorch math path:** `kernel_function` MUST compute outputs using the chosen backend's primitives only
+- Orchestrates language kernel(s) to produce the final output tensor
+- **NO PyTorch math path:** `kernel_function` MUST compute outputs using the chosen language's primitives only
 - DO NOT use `torch.nn`, `torch.nn.functional`, or PyTorch math ops for producing the final result
 - Using PyTorch for reference comparisons is allowed only inside the self-test
 - Allocate all tensors on device=`{TARGET_PLATFORM}` and keep them there
 - CPU is acceptable only for metadata and scalars
 
-**BACKEND-SPECIFIC REQUIREMENTS:**
+**LANGUAGE-SPECIFIC REQUIREMENTS:**
 - **triton**: at least one `@triton.jit` kernel; imports `triton`, `triton.language as tl`; use `tl.load`/`tl.store` with masks; do NOT call `tl.broadcast` on scalars
 - **tilelang**: at least one `@tilelang.jit` builder + `@T.prim_func`; imports `tilelang`, `tilelang.language as T`; no Triton or CuTe imports
 - **cutedsl**: at least one `@cute.kernel` function; imports `cutlass`, `cutlass.cute as cute`, `from cutlass.cute.runtime import from_dlpack`; no Triton or TileLang imports
 
 **SELF-TEST:**
 - Include a `test_kernel()` or `run_tests()` function
-- Compare backend result to a PyTorch reference from the original problem code
+- Compare language result to a PyTorch reference from the original problem code
 - Use `get_init_inputs()` and `get_inputs()` if present in the problem
 - Use `torch.allclose` with rtol≤1e-3, atol≤1e-3 for fp32; up to 2e-2 for fp16/bf16
 - Print `PASS` on success and exit with code 0
@@ -62,7 +62,7 @@ Generate ONE complete Python file that:
 - Favor coalesced memory access; tile by blocks; compute grid from shape
 
 **ALLOWED IMPORTS:**
-- `torch`, backend-specific packages (`triton`/`tilelang`/`cutlass`), and stdlib only
+- `torch`, language-specific packages (`triton`/`tilelang`/`cutlass`), and stdlib only
 - No I/O beyond the current directory
 
 ### Step 3: Verify (if VERIFY is true)
@@ -77,7 +77,7 @@ python skillset/tools/run_candidate.py --code-path $COMPOSED_PATH --timeout 120
 If verification fails, read the error output and generate a corrected version.
 
 **Refinement guidance:**
-- Fix backend compilation/runtime errors using the backend-specific pitfalls from `04_refine_kernel.md`
+- Fix language compilation/runtime errors using the language-specific pitfalls from `04_refine_kernel.md`
 - Keep `kernel_function(...)` name unchanged
 - Retain the self-test
 - Do NOT reintroduce PyTorch math in `kernel_function`

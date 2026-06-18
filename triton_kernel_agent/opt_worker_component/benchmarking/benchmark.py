@@ -86,6 +86,7 @@ class Benchmark:
         warmup: int = 25,
         repeat: int = 100,
         timing_method: str = "cuda_event",
+        kernel_language: str = "triton",
     ):
         """Initialize the benchmark.
 
@@ -97,6 +98,8 @@ class Benchmark:
             warmup: Number of warmup iterations (or warmup time in ms for do_bench)
             repeat: Number of repeat iterations (or rep time in ms for do_bench)
             timing_method: Timing method ("cuda_event", "do_bench", "host_time")
+            kernel_language: Kernel DSL being optimised ("triton" or "cutedsl").
+                Controls which timing backend is used in the subprocess.
         """
         self.logger = logger
         self.artifacts_dir = artifacts_dir
@@ -104,6 +107,7 @@ class Benchmark:
         self.warmup = warmup
         self.repeat = repeat
         self.timing_method = timing_method
+        self.kernel_language = kernel_language
 
     def benchmark_kernel(
         self,
@@ -150,6 +154,8 @@ class Benchmark:
                     "--json",
                     str(results_json),
                     "--quiet",
+                    "--kernel-language",
+                    self.kernel_language,
                 ]
 
                 if baseline_file:

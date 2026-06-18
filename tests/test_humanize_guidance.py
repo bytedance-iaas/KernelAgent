@@ -32,7 +32,7 @@ _ROOT_CLAUDE_GUIDANCE = _REPO_ROOT / "CLAUDE.md"
 _CANONICAL_FILES = [
     "triton_kernel_agent/templates/backend/triton/guidelines.j2",
     "triton_kernel_agent/platform_config.py",
-    "triton_kernel_agent/kernel_backend_config.py",
+    "triton_kernel_agent/kernel_language_config.py",
     "Fuser/config/autoagent_default.yml",
     "triton_kernel_agent/templates/kernel_optimization.j2",
     "triton_kernel_agent/templates/reflexion_prompt.j2",
@@ -56,12 +56,12 @@ _REQUIRED_GUIDANCE_PATTERNS = {
     "Humanize is excluded from runtime dependencies": r"runtime dependenc(?:y|ies)",
     "Plans include affected-subsystem context": r"affects kernel generation",
     "Plans include target-platform context": r"target platform",
-    "Plans include target-backend context": r"target kernel backend",
+    "Plans include target-language context": r"target kernel language",
     "Plans include Release 1 SM90 FP8 GEMM context": r"SM90 FP8 GEMM",
     "Plans include artifact-change context": r"artifact changes",
     "Plans include validation context": r"validation plan",
-    "Reviews include cuteDSL backend context": r"cuteDSL",
-    "Reviews include TileLang backend context": r"TileLang",
+    "Reviews include cuteDSL language context": r"cuteDSL",
+    "Reviews include TileLang language context": r"TileLang",
     "Plans mention example config validation templates": r"examples/configs/",
 }
 
