@@ -49,10 +49,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from triton_kernel_agent.kernel_backend_config import (
-    KernelBackendConfig,
-    get_kernel_backend,
-    get_kernel_backend_choices,
+from triton_kernel_agent.kernel_language_config import (
+    KernelLanguageConfig,
+    get_kernel_language_config,
+    get_kernel_language_choices,
 )
 from triton_kernel_agent.platform_config import (
     get_platform,
@@ -144,7 +144,7 @@ def _build_composition_prompt(
     subgraphs: list[dict[str, Any]],
     kernel_items: list[KernelItem],
     target_platform: PlatformConfig,
-    kernel_backend: KernelBackendConfig,
+    kernel_language_config: KernelLanguageConfig,
 ) -> str:
     """Create a single user message to instruct composition by the LLM."""
     # Provide a succinct summary of subgraphs up front
@@ -166,15 +166,15 @@ def _build_composition_prompt(
         You are given:
         - The original problem file (PyTorch module and helpers).
         - A decomposition of the model into fusable subgraphs with exact shapes.
-        - Working {kernel_backend.display_name} kernels generated for some subgraphs.
+        - Working {kernel_language_config.display_name} kernels generated for some subgraphs.
 
         TARGET PLATFORM: {target_platform.name}
         DEVICE STRING: {target_platform.device_string}
-        KERNEL BACKEND: {kernel_backend.name}
+        KERNEL LANGUAGE: {kernel_language_config.name}
         {platform_guidance}
 
         Task:
-        - Compose an end-to-end {kernel_backend.display_name} implementation that matches the original
+        - Compose an end-to-end {kernel_language_config.display_name} implementation that matches the original
           model's forward pass for the provided shapes. You may inline, adapt,
           or reuse the given subgraph kernels. Prefer fusing into as few kernel
           launches as possible while preserving exact numerical semantics.
@@ -183,12 +183,12 @@ def _build_composition_prompt(
         - Return ONE complete Python file only, fenced as a single ```python block.
         - Allocate inputs, weights, intermediates, and outputs on device='{target_platform.device_string}' and keep them there throughout forward/verification.
         - CPU is acceptable only for metadata, scalars, and export serialization—avoid `.cpu()` or `.to('cpu')` on compute tensors.
-        {kernel_backend.composition_requirements}
+        {kernel_language_config.composition_requirements}
         - Use the data layout and dtype semantics indicated by subgraphs, defaulting
           to NCHW + float32 if unspecified. Respect stride/padding/dilation/groups,
           and exact op order.
         - Numerical equivalence: include a self-test (test_kernel or run_tests)
-          that compares your {kernel_backend.display_name}-based result to a PyTorch reference computed
+          that compares your {kernel_language_config.display_name}-based result to a PyTorch reference computed
           from the original problem code below (use get_init_inputs() and
           get_inputs() if present to instantiate the Model). The test must print
           'PASS' on success and exit with code 0. Use allclose with rtol<=1e-3,
@@ -200,7 +200,7 @@ def _build_composition_prompt(
         Implementation tips:
         - If merging multiple subgraphs, ensure intermediate tensor shapes match.
         - Hoist constant weights or parameters to avoid reloading per block.
-        {kernel_backend.composition_tips}
+        {kernel_language_config.composition_tips}
         """
     ).strip()
 
@@ -231,7 +231,7 @@ def _build_refinement_prompt(
     previous_code: str,
     error_info: dict[str, str],
     target_platform: PlatformConfig,
-    kernel_backend: KernelBackendConfig,
+    kernel_language_config: KernelLanguageConfig,
 ) -> str:
     """Prompt the LLM to refine the previously produced code based on errors."""
     err_tail = error_info.get("stderr_tail", "")
@@ -239,20 +239,20 @@ def _build_refinement_prompt(
 
     guidance = textwrap.dedent(
         f"""
-        You previously produced a composed {kernel_backend.display_name} implementation, but it failed
+        You previously produced a composed {kernel_language_config.display_name} implementation, but it failed
         to run/compile. Analyze the ERROR_CONTEXT below and re-emit the entire
         corrected single-file implementation as one ```python block.
 
         TARGET PLATFORM: {target_platform.name}
         DEVICE STRING: {target_platform.device_string}
-        KERNEL BACKEND: {kernel_backend.name}
+        KERNEL LANGUAGE: {kernel_language_config.name}
 
         Requirements remain the same. Additionally:
-        - Fix any {kernel_backend.display_name} compilation/runtime errors.
+        - Fix any {kernel_language_config.display_name} compilation/runtime errors.
         - Keep function name kernel_function(...) unchanged and retain the
           self-test that prints PASS on success and exits 0.
         - Do NOT reintroduce any PyTorch math path in kernel_function. The final
-          outputs must be computed via your {kernel_backend.display_name} kernels only (no fallback to
+          outputs must be computed via your {kernel_language_config.display_name} kernels only (no fallback to
           torch.nn / torch.nn.functional ops).
         - Return the complete corrected file; do not send diffs.
         """
@@ -332,7 +332,7 @@ def compose(
     verify: bool = False,
     max_iters: int = 5,
     target_platform: str = "cuda",
-    kernel_backend: str = "triton",
+    kernel_language: str = "triton",
 ) -> dict[str, Any]:
     if get_model_provider is None:
         raise SystemExit(
@@ -344,7 +344,7 @@ def compose(
 
     # Platform
     platform = get_platform(target_platform)
-    backend = get_kernel_backend(kernel_backend)
+    kernel_language_config = get_kernel_language_config(kernel_language)
 
     # Load inputs
     problem_code = _read_text(problem_path)
@@ -367,7 +367,7 @@ def compose(
                 subgraphs,
                 kernels,
                 target_platform=platform,
-                kernel_backend=backend,
+                kernel_language_config=kernel_language_config,
             )
         else:
             # Build refinement using previous error info
@@ -399,7 +399,7 @@ def compose(
                 previous_code=last_code,
                 error_info={"stderr_tail": stderr_tail, "stdout_tail": stdout_tail},
                 target_platform=platform,
-                kernel_backend=backend,
+                kernel_language_config=kernel_language_config,
             )
 
         (attempts_dir / f"attempt_{i}.prompt.txt").write_text(prompt, encoding="utf-8")
@@ -412,7 +412,7 @@ def compose(
         # Extract code
         extracted = extract_single_python_file(raw_text)
         code = extracted.code
-        if backend.name == "triton":
+        if  kernel_language_config.name == "triton":
             # Auto-patch trivial Triton pitfalls before running.
             code, changed = _auto_patch_common_triton_issues(code, platform)
         else:
@@ -454,7 +454,7 @@ def compose(
         "usage": last_usage,
         "rounds": i,
         "target_platform": target_platform,
-        "kernel_backend": backend.name,
+        "kernel_language": kernel_language_config.name,
     }
     result.update(verify_info)
 
@@ -501,10 +501,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Target platform (default: cuda)",
     )
     p.add_argument(
-        "--kernel-backend",
+        "--kernel-language",
         default="triton",
-        choices=get_kernel_backend_choices(),
-        help="Kernel source backend to generate (default: triton)",
+        choices=get_kernel_language_choices(),
+        help="Kernel source language to generate (default: triton)",
     )    
     p.add_argument("--max-iters", type=int, default=5, help="Max LLM refinement rounds")
     args = p.parse_args(argv)
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             verify=args.verify,
             max_iters=args.max_iters,
             target_platform=args.target_platform,
-            kernel_backend=args.kernel_backend,
+            kernel_language=args.kernel_language,
         )
         print(json.dumps(res, indent=2))
         return 0

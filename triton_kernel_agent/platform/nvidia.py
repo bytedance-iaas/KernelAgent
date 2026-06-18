@@ -104,12 +104,14 @@ class NvidiaBenchmarker(KernelBenchmarker):
         benchmark_lock: Any,
         warmup: int = 25,
         repeat: int = 100,
+        kernel_language: str = "triton",
     ) -> None:
         self.log_dir = log_dir
         self.logger = logger
         self.benchmark_lock = benchmark_lock
         self.warmup = warmup
         self.repeat = repeat
+        self.kernel_language = kernel_language
 
     def _get_benchmarker(self):
         from triton_kernel_agent.opt_worker_component.benchmarking.benchmark import (
@@ -125,6 +127,7 @@ class NvidiaBenchmarker(KernelBenchmarker):
             worker_id=-1,
             warmup=self.warmup,
             repeat=self.repeat,
+            kernel_language=self.kernel_language,
         )
 
     def benchmark_kernel(
@@ -240,7 +243,8 @@ class NvidiaWorkerRunner(WorkerRunner):
                 shared_history,
                 shared_reflexions,
             )
-
+            # Use this path for easy debugging
+            # _nvidia_worker_process(*args)  # Run in-process for now (no multiprocessing)
             p = mp.Process(target=_nvidia_worker_process, args=args)
             p.start()
             workers.append(p)
@@ -359,10 +363,16 @@ def _nvidia_worker_process(
                 "success": success,
                 "worker_id": worker_id,
                 "kernel_code": best_kernel,
+                "parent_kernel_code": kernel_code,
+                "generated_kernel_code": metrics.get("last_generated_kernel"),
+                "ncu_flat": metrics.get("last_ncu_flat"),
+                "baseline_ncu_flat": metrics.get("baseline_ncu_flat"),
+                "pytorch_ncu_flat": metrics.get("pytorch_ncu_flat"),
                 "time_ms": metrics.get("best_time_ms", float("inf")),
                 "parent_id": parent_id,
                 "attempt": attempt_data,
                 "reflexion": reflexion_data,
+                "early_stop_reason": metrics.get("early_stop_reason", ""),
             }
         )
 

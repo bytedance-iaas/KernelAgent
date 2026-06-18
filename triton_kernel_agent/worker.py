@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from triton_kernel_agent.kernel_backend_config import get_kernel_backend
+from triton_kernel_agent.kernel_language_config import get_kernel_language_config
 from triton_kernel_agent.platform_config import get_platform
 from triton_kernel_agent.worker_util import format_test_code_for_llm
 from utils.providers import get_model_provider
@@ -136,9 +136,9 @@ class VerificationWorker:
         openai_model: str = "gpt-5",
         high_reasoning_effort: bool = True,
         target_platform: str = "cuda",
-        kernel_backend: str = "triton",
         no_cusolver: bool = False,
         test_timeout_s: int = 30,
+        kernel_language: str = "triton",
     ):
         """
         Initialize a verification worker.
@@ -153,9 +153,9 @@ class VerificationWorker:
             openai_model: Model name for refinement
             high_reasoning_effort: Whether to use high reasoning effort for OpenAI models
             target_platform: Target platform default: cuda
-            kernel_backend: Kernel source backend to generate (triton or cutedsl)
             no_cusolver: If True, disables cuSolver library usage
             test_timeout_s: Timeout in seconds for test execution
+            kernel_language: Kernel DSL ("triton" or "cutedsl") used to generate the kernel code
         """
         self.worker_id = worker_id
         self.workdir = Path(workdir)
@@ -165,7 +165,7 @@ class VerificationWorker:
         self.openai_model = openai_model
         self.high_reasoning_effort = high_reasoning_effort
         self._platform_config = get_platform(target_platform)
-        self.kernel_backend = get_kernel_backend(kernel_backend)
+        self.kernel_language_config = get_kernel_language_config(kernel_language)
         self.no_cusolver = no_cusolver
         self.test_timeout_s = test_timeout_s
 
@@ -182,7 +182,7 @@ class VerificationWorker:
         # Initialize prompt manager with resolved config
         self.prompt_manager = PromptManager(
             target_platform=self._platform_config,
-            kernel_backend=self.kernel_backend.name,
+            kernel_language=self.kernel_language_config.name,
         )
 
         # Initialize provider (may be unavailable in offline/test environments)
@@ -328,7 +328,7 @@ class VerificationWorker:
         sanitized = self._strip_comments_and_strings(kernel_code)
         for pattern, message in DISALLOWED_TORCH_PATTERNS:
             if pattern.search(sanitized):
-                return message.replace("Triton", self.kernel_backend.display_name)
+                return message.replace("Triton", self.kernel_language_config.display_name)
         return None
 
     def _run_test(self) -> tuple[bool, str, str]:

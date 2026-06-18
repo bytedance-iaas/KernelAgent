@@ -10,39 +10,39 @@ upstream project and avoids duplication.
 
 ## Available Templates
 
-### Shared (backend-agnostic)
+### Shared (language-agnostic)
 - `test_generation.j2` — Generates test code for kernel verification
 - `kernel_optimization.j2` — Generates optimized kernel based on profiling
 - `reflexion_prompt.j2` — Generates reflexion/self-critique prompt for iterative refinement
 
-### Per-backend (`backend/<backend>/`)
+### Per-language (`backend/<language>/`)
 
 Templates are organized under `backend/triton/`, `backend/tilelang/`, and
-`backend/cutedsl/`. The `kernel_backend` variable selects which set is used.
+`backend/cutedsl/`. The `kernel_language` variable selects which set is used.
 
 | Template | Purpose |
 |---|---|
-| `guidelines.j2` | Backend-specific programming guidelines (included by generation/refinement templates) |
-| `kernel_generation.j2` | Generates initial kernel implementation for this backend |
-| `kernel_refinement.j2` | Generates refined kernel based on error feedback for this backend |
+| `guidelines.j2` | Language-specific programming guidelines (included by generation/refinement templates) |
+| `kernel_generation.j2` | Generates initial kernel implementation for this language |
+| `kernel_refinement.j2` | Generates refined kernel based on error feedback for this language |
 
-Supported backends: **triton**, **tilelang**, **cutedsl**
+Supported languages: **triton**, **tilelang**, **cutedsl**
 
 ## Usage
 
 ```bash
-# Test code generation (backend-agnostic)
+# Test code generation (language-agnostic)
 python skillset/tools/render_template.py \
   --template test_generation \
   --vars '{"problem_description": "...", "device_string": "cuda"}'
 
-# Kernel generation — select backend via kernel_backend
+# Kernel generation — select language via kernel_language
 python skillset/tools/render_template.py \
   --template kernel_generation \
-  --vars '{"problem_description": "...", "test_code": "...", "kernel_backend": "triton"}'
+  --vars '{"problem_description": "...", "test_code": "...", "kernel_language": "triton"}'
 
-# Backend guidelines only
+# Language guidelines only
 python skillset/tools/render_template.py \
-  --template backend_guidelines \
-  --vars '{"target_platform": "cuda", "kernel_backend": "tilelang"}'
+  --template language_guidelines \
+  --vars '{"target_platform": "cuda", "kernel_language": "tilelang"}'
 ```

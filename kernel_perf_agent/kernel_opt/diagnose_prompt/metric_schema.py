@@ -111,7 +111,14 @@ NCU_METRIC_SECTIONS: Dict[str, List[MetricDef]] = {
             "%",
         ),
     ],
-    "Occupancy & Resources": [
+    "Launch Shape & Occupancy": [
+        ("Grid X", "launch__grid_dim_x", ""),
+        ("Grid Y", "launch__grid_dim_y", ""),
+        ("Grid Z", "launch__grid_dim_z", ""),
+        ("Block X (threads)", "launch__block_dim_x", ""),
+        ("Block Y (threads)", "launch__block_dim_y", ""),
+        ("Block Z (threads)", "launch__block_dim_z", ""),
+        ("Blocks per SM", "launch__blocks_per_multiprocessor", ""),
         ("Occupancy Limited By Blocks", "launch__occupancy_limit_blocks", ""),
         ("Occupancy Limited By Registers", "launch__occupancy_limit_registers", ""),
         (
