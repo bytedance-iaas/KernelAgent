@@ -12,7 +12,7 @@ from a problem description (step 06).
 - `SUBGRAPH_JSON`: Path to subgraphs.json + index, OR inline problem description
 - `SUBGRAPH_DIR`: Directory to save kernel and test files
 - `TARGET_PLATFORM`: `cuda` or `xpu` (default: `cuda`)
-- `KERNEL_BACKEND`: `triton` (default), `tilelang`, or `cutedsl`
+- `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 
 ## Workflow
 
@@ -28,15 +28,15 @@ This outputs JSON with `problem_description` and `reference_code`.
 
 If working from a raw problem description (direct path), use that directly.
 
-### Step 2: Get Backend Guidelines
+### Step 2: Get Language Guidelines
 
 ```bash
 python skillset/tools/render_template.py \
-  --template backend_guidelines \
-  --vars '{"kernel_backend": "$KERNEL_BACKEND"}'
+  --template language_guidelines \
+  --vars '{"kernel_language": "$KERNEL_LANGUAGE"}'
 ```
 
-Read the output — these are the programming rules and code structure you must follow for the chosen backend.
+Read the output — these are the programming rules and code structure you must follow for the chosen language.
 
 ### Step 3: Generate Test Code
 
@@ -60,17 +60,17 @@ Save to `$SUBGRAPH_DIR/test_kernel.py`.
 
 ### Step 4: Generate Kernel
 
-Generate a complete Python file implementing the kernel. The exact structure depends on `KERNEL_BACKEND` — follow the guidelines read in Step 2 for the required imports, decorator patterns, and skeleton.
+Generate a complete Python file implementing the kernel. The exact structure depends on `KERNEL_LANGUAGE` — follow the guidelines read in Step 2 for the required imports, decorator patterns, and skeleton.
 
-**UNIVERSAL REQUIREMENTS (all backends):**
+**UNIVERSAL REQUIREMENTS (all languages):**
 - Expose a top-level `kernel_function(...)` that accepts PyTorch tensors/scalars and returns output tensor(s)
-- `kernel_function` handles tensor allocation and kernel launch setup; all numerical work lives in backend primitives
+- `kernel_function` handles tensor allocation and kernel launch setup; all numerical work lives in language primitives
 - DO NOT call PyTorch math ops (torch.add, torch.matmul, torch.mm, torch.bmm, etc.) for computation
 - DO NOT use `torch.nn`, `torch.nn.functional`, aliases like `F.*`, or `torch.ops.aten.*`
 - DO NOT subclass `nn.Module` or call `.forward()`
 - DO NOT import `inspect`, use `sys._getframe`, `globals()`, or `locals()`
 
-**BACKEND-SPECIFIC STRUCTURE:**
+**LANGUAGE-SPECIFIC STRUCTURE:**
 - **triton**: `@triton.jit` kernel + `kernel_function` wrapper; use `tl.load`/`tl.store`, `tl.program_id`, `tl.arange`, power-of-two BLOCK_SIZE with masking
 - **tilelang**: `@tilelang.jit` builder returning a `@T.prim_func`; `kernel_function` compiles/launches via TileLang; no Triton or CuTe imports
 - **cutedsl**: `@cute.kernel` function(s); `kernel_function` converts tensors via `from_dlpack`, sets grid/block, and launches; no Triton or TileLang imports
