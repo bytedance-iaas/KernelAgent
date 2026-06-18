@@ -103,9 +103,9 @@ KERNEL_BACKENDS: dict[str, KernelBackendConfig] = {
     "triton": KernelBackendConfig(
         name="triton",
         display_name="Triton",
-        generation_template="kernel_generation.j2",
-        refinement_template="kernel_refinement.j2",
-        guidelines_template="triton_guidelines.j2",
+        generation_template="backend/triton/kernel_generation.j2",
+        refinement_template="backend/triton/kernel_refinement.j2",
+        guidelines_template="backend/triton/guidelines.j2",
         composition_label="Triton",
         composition_requirements=_TRITON_COMPOSITION_REQUIREMENTS,
         composition_tips=_TRITON_COMPOSITION_TIPS,
