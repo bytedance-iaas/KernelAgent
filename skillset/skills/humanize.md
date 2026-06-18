@@ -38,7 +38,7 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 ## Review Checklist For Codex/Humanize
 
-- Correctness: enforce the runtime constraints in the selected backend guidance: `triton_kernel_agent/templates/triton_guidelines.j2`, `triton_kernel_agent/templates/backend/cutedsl/guidelines.j2`, or `triton_kernel_agent/templates/tilelang/guidelines.j2`.
+- Correctness: enforce the runtime constraints in the selected backend guidance: `triton_kernel_agent/templates/backend/triton/guidelines.j2`, `triton_kernel_agent/templates/backend/cutedsl/guidelines.j2`, or `triton_kernel_agent/templates/backend/tilelang/guidelines.j2`.
 - Verification: changes should preserve strict PASS/sentinel-based verification semantics and avoid weakening tests.
 - Performance: benchmark/profiling changes should respect existing warmup/repeat, timeout, lock, and semaphore constraints.
 - Prompt changes: avoid duplicating backend guidance templates; prefer references or targeted deltas.
@@ -49,12 +49,12 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 ## Existing Sources To Check Before Adding New Guidance
 
-- `triton_kernel_agent/templates/triton_guidelines.j2` for Triton coding constraints and examples.
+- `triton_kernel_agent/templates/backend/triton/guidelines.j2` for Triton coding constraints and examples.
 - `triton_kernel_agent/platform_config.py` for CUDA/XPU platform guidance.
 - `triton_kernel_agent/kernel_backend_config.py` for Triton, cuteDSL, and TileLang backend routing and composition requirements.
 - `Fuser/config/autoagent_default.yml` for default Fuser routing, target platform, and kernel backend settings.
 - `triton_kernel_agent/templates/backend/cutedsl/` for cuteDSL generation/refinement/guideline templates.
-- `triton_kernel_agent/templates/tilelang/` for TileLang generation/refinement/guideline templates.
+- `triton_kernel_agent/templates/backend/tilelang/` for TileLang generation/refinement/guideline templates.
 - `triton_kernel_agent/templates/kernel_optimization.j2` for optimization prompt context.
 - `triton_kernel_agent/templates/reflexion_prompt.j2` for review/reflection expectations.
 - `CONTRIBUTING.md` for tests, style, PR expectations, and performance notes.
