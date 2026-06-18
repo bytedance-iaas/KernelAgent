@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hardware-Aware Optimization Worker for Triton Kernels.
+"""Hardware-Aware Optimization Worker for GPU Kernels (Triton and CuteDSL).
 
 This module provides the OptimizationWorker class that integrates:
 - Hardware-aware optimization (NCU profiling + GPU specs + bottleneck analysis)
@@ -98,6 +98,8 @@ class OptimizationWorker:
         platform_config: dict[str, str] | None = None,
         # Template overrides from YAML config ─────────────────────
         templates: dict[str, str] | None = None,
+        # Kernel DSL: "triton" or "cutedsl" ───────────────────────
+        kernel_language: str = "triton",
     ):
         """
         Initialize the optimization worker.
@@ -145,6 +147,7 @@ class OptimizationWorker:
         self.benchmark_repeat = benchmark_repeat
         self.roofline_config = roofline_config or RooflineConfig()
         self.use_rag = use_rag
+        self.kernel_language = kernel_language
 
         # Platform components (registry-resolved, may be empty)
         self._platform = platform_components or {}
@@ -262,6 +265,7 @@ class OptimizationWorker:
         self.prompt_manager = PromptManager(
             target_platform=platform_config,
             template_overrides=self.templates_config,
+            kernel_language=self.kernel_language,
         )
 
         # Benchmarking
@@ -276,6 +280,7 @@ class OptimizationWorker:
             worker_id=self.worker_id,
             warmup=self.benchmark_warmup,
             repeat=self.benchmark_repeat,
+            kernel_language=self.kernel_language,
         )
 
         # Profiler
@@ -320,6 +325,7 @@ class OptimizationWorker:
             openai_model=self.openai_model,
             high_reasoning_effort=self.high_reasoning_effort,
             target_platform=self.target_platform,
+            kernel_language=self.kernel_language,
         )
 
         # Roofline analyzer
@@ -415,6 +421,7 @@ class OptimizationWorker:
             # Shared history from beam search manager
             prior_history=self.prior_history,
             prior_reflexions=self.prior_reflexions,
+            kernel_language=self.kernel_language,
         )
 
         # Run optimization

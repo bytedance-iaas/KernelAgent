@@ -49,10 +49,10 @@ try:
 except Exception:  # pragma: no cover - import-time dependency
     TritonKernelAgent = None  # type: ignore
 
-from triton_kernel_agent.kernel_backend_config import (
-    KernelBackendConfig,
-    get_kernel_backend,
-    get_kernel_backend_choices,
+from triton_kernel_agent.kernel_language_config import (
+    KernelLanguageConfig,
+    get_kernel_language_config,
+    get_kernel_language_choices,
 )
 from triton_kernel_agent.platform_config import (
     get_platform,
@@ -266,7 +266,7 @@ def _build_reference_code(item: dict[str, Any]) -> tuple[str, list[str]]:
 def _synthesize_problem_description(
     item: dict[str, Any],
     target_platform: PlatformConfig,
-    kernel_backend: KernelBackendConfig,
+    kernel_language_config: KernelLanguageConfig,
 ) -> str:
     id_ = str(item.get("id", "unknown"))
     type_ = str(item.get("type", ""))
@@ -284,7 +284,7 @@ def _synthesize_problem_description(
     # Get device string for the platform
     header = textwrap.dedent(
         f"""
-        Implement a {kernel_backend.display_name} kernel that computes the following subgraph end-to-end.
+        Implement a {kernel_language_config.display_name} kernel that computes the following subgraph end-to-end.
 
         Subgraph ID: {id_}
         Type: {type_}
@@ -292,7 +292,7 @@ def _synthesize_problem_description(
         DType: {dtype}
         Target Platform: {target_platform.name}
         Device String: {target_platform.device_string}
-        Kernel Backend: {kernel_backend.name}
+        Kernel Language: {kernel_language_config.name}
 
         Shapes:
         - input: {_fmt_shape(inputs_multi[0]) if isinstance(inputs_multi, list) else _fmt_shape(input_shape)}
@@ -306,13 +306,13 @@ def _synthesize_problem_description(
         {json.dumps(item.get("ops", []), indent=2)}
 
         Requirements:
-        - Return a complete Python file with {kernel_backend.display_name} kernel code and a wrapper function named kernel_function(...).
+        - Return a complete Python file with {kernel_language_config.display_name} kernel code and a wrapper function named kernel_function(...).
         - kernel_function must accept input tensor(s) and any required weights/bias parameters (match shapes above).
         - Implement the exact semantics of the listed ops in the given order for the provided shapes.
         - Use {layout} layout and {dtype} dtype semantics.
         - Allocate inputs, weights, intermediates, and outputs on device='{target_platform.device_string}' and keep them there throughout forward/verification.
         - CPU is acceptable only for metadata, scalars, and export serialization—avoid `.cpu()` or `.to('cpu')` on compute tensors.
-        - All numerical computation must happen in {kernel_backend.display_name} kernel code; do not use PyTorch compute ops to satisfy the subgraph.
+        - All numerical computation must happen in {kernel_language_config.display_name} kernel code; do not use PyTorch compute ops to satisfy the subgraph.
         - The test will import kernel_function and compare to the reference implementation below.
 
         Test tolerance policy (enforced in generated tests):
@@ -341,7 +341,7 @@ def run(
     agent_model: str | None = None,
     jobs: int = 1,
     target_platform: str = "cuda",
-    kernel_backend: str = "triton",
+    kernel_language: str = "triton",
     max_iters: int = 10,
     no_cusolver: bool = False,
     test_timeout_s: int = 30,
@@ -355,7 +355,7 @@ def run(
         raise SystemExit(
             "TritonKernelAgent not available. Ensure the package is importable."
         )
-    backend = get_kernel_backend(kernel_backend)
+    kernel_language_config = get_kernel_language_config(kernel_language)
 
     with subgraphs_path.open("r", encoding="utf-8") as f:
         items: list[dict[str, Any]] = json.load(f)
@@ -374,7 +374,7 @@ def run(
         pdesc = _synthesize_problem_description(
             item,
             target_platform=platform,
-            kernel_backend=backend,
+            kernel_language_config=kernel_language_config,
         )
         sg_dir = out_dir / sid
         sg_dir.mkdir(parents=True, exist_ok=True)
@@ -386,7 +386,7 @@ def run(
             max_rounds=max_iters,
             model_name=agent_model,
             target_platform=platform,
-            kernel_backend=backend.name,
+            kernel_language=kernel_language,
             no_cusolver=no_cusolver,
             test_timeout_s=test_timeout_s,
         )
@@ -416,7 +416,7 @@ def run(
                 "rounds": result.get("rounds"),
                 "session_dir": result.get("session_dir"),
                 "kernel_path": str((sg_dir / "kernel.py").resolve()),
-                "kernel_backend": backend.name,
+                "kernel_language": kernel_language_config.name,
             }
         else:
             return idx, {
@@ -485,10 +485,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Target platform (default: cuda)",
     )
     p.add_argument(
-        "--kernel-backend",
+        "--kernel-language",
         default="triton",
-        choices=get_kernel_backend_choices(),
-        help="Kernel source backend to generate (default: triton)",
+        choices=get_kernel_language_choices(),
+        help="Kernel source language to generate (default: triton)",
     )    
     p.add_argument(
         "--no-cusolver",
@@ -523,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_model=args.agent_model,
         jobs=jobs_val,
         target_platform=args.target_platform,
-        kernel_backend=args.kernel_backend,
+        kernel_language=args.kernel_language,
         no_cusolver=args.no_cusolver,
         test_timeout_s=args.test_timeout_s,
     )

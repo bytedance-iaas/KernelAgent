@@ -153,7 +153,7 @@ def _run_once(
         raise RuntimeError(f"{name} failed to execute: {exc}") from exc
 
 
-def _benchmark(
+def _benchmark_triton(
     fn: Callable,
     inputs: Tuple[torch.Tensor, ...],
     init_inputs: list,
@@ -161,7 +161,9 @@ def _benchmark(
     warmup: int = 25,
     rep: int = 100,
 ) -> float:
-    """Benchmark a kernel function using triton.testing.do_bench."""
+    """Benchmark using triton.testing.do_bench."""
+    import triton.testing as tt
+
     try:
         ms = tt.do_bench(
             lambda: fn(*inputs, *init_inputs),
@@ -174,6 +176,59 @@ def _benchmark(
     except Exception as exc:
         print(f"❌ {name}: Benchmark failed: {exc}")
         return float("inf")
+
+
+def _benchmark_cuda_events(
+    fn: Callable,
+    inputs: Tuple[torch.Tensor, ...],
+    init_inputs: list,
+    name: str,
+    warmup: int = 25,
+    rep: int = 100,
+) -> float:
+    """Benchmark using CUDA events (no Triton dependency)."""
+    try:
+        call = lambda: fn(*inputs, *init_inputs)  # noqa: E731
+
+        for _ in range(warmup):
+            call()
+        torch.cuda.synchronize()
+
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        times: list[float] = []
+        for _ in range(rep):
+            start.record()
+            call()
+            end.record()
+            torch.cuda.synchronize()
+            times.append(start.elapsed_time(end))
+
+        ms = sum(times) / len(times)
+        print(f"{name}: {ms:.4f} ms (mean over {rep} runs)")
+        return ms
+    except Exception as exc:
+        print(f"❌ {name}: Benchmark failed: {exc}")
+        return float("inf")
+
+
+def _benchmark(
+    fn: Callable,
+    inputs: Tuple[torch.Tensor, ...],
+    init_inputs: list,
+    name: str,
+    warmup: int = 25,
+    rep: int = 100,
+    kernel_language: str = "triton",
+) -> float:
+    """Benchmark a kernel function.
+
+    Uses ``triton.testing.do_bench`` for Triton kernels and CUDA events for
+    CuteDSL (or any kernel that should not import Triton).
+    """
+    if kernel_language == "cutedsl":
+        return _benchmark_cuda_events(fn, inputs, init_inputs, name, warmup, rep)
+    return _benchmark_triton(fn, inputs, init_inputs, name, warmup, rep)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -213,6 +268,13 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--json", type=Path, help="Save results to JSON file")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--kernel-language",
+        dest="kernel_language",
+        default="triton",
+        choices=["triton", "cutedsl"],
+        help="Kernel DSL: 'triton' uses triton.testing.do_bench; 'cutedsl' uses CUDA events",
+    )
 
     args = parser.parse_args()
     args.problem = args.problem.resolve()
@@ -440,7 +502,7 @@ def main():
 
     if not args.quiet:
         print("=" * 80)
-        print("TRITON KERNEL PROFILING")
+        print(f"{args.kernel_language.upper()} KERNEL PROFILING")
         print("=" * 80)
         print(f"Problem: {args.problem.name}")
         print(f"Size: {args.size}")
@@ -471,7 +533,8 @@ def main():
         if not args.quiet:
             print("1. PyTorch Reference")
         baseline_time = _benchmark(
-            baseline_model, inputs, [], "PyTorch", args.warmup, args.repeat
+            baseline_model, inputs, [], "PyTorch", args.warmup, args.repeat,
+            kernel_language=args.kernel_language,
         )
         results["kernels"]["pytorch_reference"] = {
             "time_ms": baseline_time,
@@ -512,7 +575,8 @@ def main():
 
     # Benchmark kernel
     kernel_time = _benchmark(
-        kernel_fn, inputs, kernel_init_args, kernel_name, args.warmup, args.repeat
+        kernel_fn, inputs, kernel_init_args, kernel_name, args.warmup, args.repeat,
+        kernel_language=args.kernel_language,
     )
     results["kernels"][kernel_name] = {"time_ms": kernel_time, "path": str(args.kernel)}
 

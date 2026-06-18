@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from triton_kernel_agent.opt_manager import OptimizationManager
+from triton_kernel_agent.opt_manager import OptimizationManager, print_metrics
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
@@ -62,7 +62,25 @@ def _run_strategy(
     print("\n" + "=" * 80)
     print(f"{strategy.upper()} OPTIMIZATION")
     print("=" * 80)
-    print(f"Config: {config_path}")
+
+    import yaml
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    print_metrics(
+        "Configuration",
+        {
+            "Config file": str(config_path),
+            "Strategy": cfg.get("strategy", strategy),
+            "Model": cfg.get("openai_model", "(default)"),
+            "Kernel language": cfg.get("kernel_language", "triton"),
+            "Num workers": cfg.get("num_workers", 4),
+            "Max rounds": max_rounds if max_rounds is not None else "(from config)",
+            "GPU": cfg.get("gpu_name", "(default)"),
+            "Benchmark warmup": cfg.get("benchmark_warmup", "(default)"),
+            "Benchmark repeat": cfg.get("benchmark_repeat", "(default)"),
+            "Divergence threshold": cfg.get("divergence_threshold", "(default)"),
+        },
+    )
 
     manager = OptimizationManager(
         config=str(config_path),

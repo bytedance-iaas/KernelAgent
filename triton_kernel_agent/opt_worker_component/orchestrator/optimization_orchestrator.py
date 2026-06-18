@@ -33,13 +33,24 @@ from triton_kernel_agent.worker_util import _write_kernel_file
 from utils.providers.base import BaseProvider
 
 
-def extract_triton_config(kernel_code: str) -> dict[str, Any]:
-    """
-    Extract Triton config from @triton.autotune decorator in kernel code.
+def extract_kernel_config(
+    kernel_code: str, kernel_language: str = "triton"
+) -> dict[str, Any]:
+    """Extract kernel configuration parameters from kernel code.
 
-    Parses: @triton.autotune(configs=[triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=2)])
+    For Triton: parses ``@triton.autotune`` decorator to get block sizes,
+    num_warps, and num_stages.
+    For CuteDSL: extracts module-level integer constants (e.g. ``_BLK = 256``,
+    ``BLK_M = 128``) so the reflexion history can track tile-size changes.
+
     Returns: {"num_warps": 4, "num_stages": 2, "BLOCK_M": 64, ...}
     """
+    if kernel_language == "cutedsl":
+        # Extract module-level integer constants (e.g. _BLK = 256, _WARPS = 8,
+        # BLK_M = 128) so the reflexion history can track tile-size changes.
+        matches = re.findall(r"^([A-Z_][A-Z0-9_]*)\s*=\s*(\d+)", kernel_code, re.MULTILINE)
+        return {name: int(val) for name, val in matches}
+
     config: dict[str, Any] = {}
 
     # Match triton.Config(...) blocks
@@ -170,34 +181,130 @@ class Reflexion:
         return cls(**{k: v for k, v in d.items() if k in valid_keys})
 
 
-def _get_triton_kernel_metrics(ncu_metrics: dict[str, Any]) -> dict[str, Any]:
-    """
-    Extract metrics for the Triton kernel, filtering out PyTorch kernels.
+def _compute_grid_analysis(
+    ncu_metrics: dict[str, Any],
+    gpu_specs: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Compute grid utilization metrics to help the LLM diagnose occupancy issues.
 
-    NCU profiles all CUDA kernels including PyTorch internals (at::*).
-    This function finds the actual Triton kernel metrics.
+    Extracts launch shape from NCU metrics and computes:
+    - total blocks launched
+    - blocks per SM
+    - estimated wave count
+    - warp occupancy
+    - a human-readable assessment and recommendation
+
+    Returns None if required metrics are unavailable.
+    """
+    flat = _get_target_kernel_metrics(ncu_metrics) if ncu_metrics else {}
+    grid_x = flat.get("launch__grid_dim_x")
+    grid_y = flat.get("launch__grid_dim_y", 1)
+    grid_z = flat.get("launch__grid_dim_z", 1)
+    blocks_per_sm = flat.get("launch__blocks_per_multiprocessor")
+    warp_active_pct = flat.get("sm__warps_active.avg.pct_of_peak_sustained_active", 0.0)
+
+    if grid_x is None:
+        return None
+
+    try:
+        grid_x = int(grid_x)
+        grid_y = int(grid_y) if grid_y else 1
+        grid_z = int(grid_z) if grid_z else 1
+    except (ValueError, TypeError):
+        return None
+
+    total_blocks = grid_x * grid_y * grid_z
+    sm_count = (gpu_specs or {}).get("sm_count", 132)
+
+    if blocks_per_sm is not None:
+        try:
+            bps = float(blocks_per_sm)
+        except (ValueError, TypeError):
+            bps = max(1.0, total_blocks / sm_count)
+    else:
+        bps = max(1.0, total_blocks / sm_count)
+
+    concurrent_blocks = sm_count * bps
+    estimated_waves = total_blocks / concurrent_blocks if concurrent_blocks > 0 else float("inf")
+
+    # Assessment
+    if total_blocks < sm_count:
+        assessment = (
+            f"CRITICAL: only {total_blocks} blocks for {sm_count} SMs — "
+            f"{100 * total_blocks / sm_count:.0f}% SM utilization. "
+            "Most SMs are idle; HBM latency cannot be hidden."
+        )
+        recommendation = (
+            f"Reduce tile size (e.g. BLOCK_M) to increase total blocks to at least "
+            f"{sm_count * 4}–{sm_count * 8}. "
+            "Example: BLOCK_M=1 gives grid=M blocks, fully utilizing all SMs."
+        )
+    elif estimated_waves > 20:
+        assessment = (
+            f"WARNING: {total_blocks} blocks → ~{estimated_waves:.0f} sequential waves. "
+            f"Each wave incurs ~15 µs scheduling overhead "
+            f"(≈ {estimated_waves * 15 / 1000:.1f} ms total wasted)."
+        )
+        recommendation = (
+            f"Reduce total blocks to {sm_count * 4}–{sm_count * 8} by increasing tile "
+            "size or reducing SPLIT_K. Wave overhead is invisible in per-kernel NCU "
+            "metrics but dominates wall-clock time."
+        )
+    elif warp_active_pct < 30.0:
+        assessment = (
+            f"LOW OCCUPANCY: warp active = {warp_active_pct:.1f}%. "
+            "Too few warps in flight to hide memory latency."
+        )
+        recommendation = (
+            "Increase grid size or num_warps to raise occupancy above 50%. "
+            "Check launch__occupancy_limit_* to find the bottleneck resource."
+        )
+    else:
+        assessment = (
+            f"Grid OK: {total_blocks} blocks, ~{estimated_waves:.1f} waves, "
+            f"{warp_active_pct:.1f}% warp active."
+        )
+        recommendation = ""
+
+    return {
+        "total_blocks": total_blocks,
+        "sm_count": sm_count,
+        "blocks_per_sm": bps,
+        "estimated_waves": estimated_waves,
+        "warp_active_pct": float(warp_active_pct),
+        "assessment": assessment,
+        "recommendation": recommendation,
+    }
+
+
+def _get_target_kernel_metrics(ncu_metrics: dict[str, Any]) -> dict[str, Any]:
+    """Extract metrics for the target kernel, filtering out PyTorch kernels.
+
+    NCU profiles all CUDA kernels including PyTorch internals (``at::*``).
+    This function finds the primary non-PyTorch kernel metrics, whether the
+    kernel was written in Triton, CuteDSL, or another language.
 
     Args:
-        ncu_metrics: Dict keyed by kernel name with metric dicts as values
+        ncu_metrics: Dict keyed by kernel name with metric dicts as values.
 
     Returns:
-        Flat metrics dict for the Triton kernel, or first non-PyTorch kernel
+        Flat metrics dict for the first non-PyTorch kernel found, or the
+        first kernel overall if all are PyTorch-internal.
     """
     if not ncu_metrics:
         return {}
 
-    # Filter out PyTorch kernels (they start with "at::" or "void at::")
-    triton_kernels = {
+    # Filter out PyTorch-internal kernels (named "at::..." or "void at::...")
+    target_kernels = {
         name: metrics
         for name, metrics in ncu_metrics.items()
         if not name.startswith("at::") and not name.startswith("void at::")
     }
 
-    if triton_kernels:
-        # Return the first Triton kernel's metrics
-        return next(iter(triton_kernels.values()))
+    if target_kernels:
+        return next(iter(target_kernels.values()))
 
-    # Fallback: return first kernel if no Triton kernel found
+    # Fallback: return first kernel
     return next(iter(ncu_metrics.values()), {})
 
 
@@ -229,6 +336,7 @@ class OptimizationOrchestrator:
         prior_history: list[dict] | None = None,
         prior_reflexions: list[dict] | None = None,
         rag_prescriber: Any | None = None,
+        kernel_language: str = "triton",
     ):
         """
         Initialize optimization orchestrator.
@@ -295,6 +403,9 @@ class OptimizationOrchestrator:
         # Pre-computed bottleneck override (skip LLM analysis if set)
         self.bottleneck_override = bottleneck_override
 
+        # Kernel language ("triton" or "cutedsl")
+        self.kernel_language = kernel_language
+
         # History tracking for reflexion
         self.attempt_history: deque[OptimizationAttempt] = deque(maxlen=10)
         self.reflexions: list[Reflexion] = []
@@ -341,6 +452,8 @@ class OptimizationOrchestrator:
         best_round_num: int = 0
         early_stop_reason = ""
         any_verified = False
+        last_generated_kernel: str | None = None
+        last_ncu_flat: dict[str, Any] | None = None
 
         # Reset roofline history for new optimization run
         self.roofline_analyzer.reset_history()
@@ -353,7 +466,7 @@ class OptimizationOrchestrator:
         self.logger.info(f"Problem: {problem_description[:100]}...")
 
         # Benchmark baseline and PyTorch (now includes baseline SOL profiling)
-        best_time, baseline_results, pytorch_baseline_time, baseline_sol = (
+        best_time, baseline_results, pytorch_baseline_time, baseline_sol, baseline_ncu_flat, pytorch_ncu_flat = (
             self._benchmark_baseline(kernel_code, problem_file, known_kernel_time)
         )
 
@@ -381,7 +494,7 @@ class OptimizationOrchestrator:
 
             # Log roofline for the kernel we just profiled
             if ncu_metrics:
-                flat_metrics = _get_triton_kernel_metrics(ncu_metrics)
+                flat_metrics = _get_target_kernel_metrics(ncu_metrics)
                 roofline_check = self.roofline_analyzer.analyze(
                     ncu_metrics=flat_metrics,
                 )
@@ -408,6 +521,13 @@ class OptimizationOrchestrator:
             else:
                 primary = bottleneck_results[0]
 
+            # Log the bottleneck recommendation for this round
+            self.logger.info(f"[{round_num}] Bottleneck: [{primary.category.upper()}] {primary.summary}")
+            if primary.root_causes:
+                self.logger.info(f"[{round_num}]   Root cause: {primary.root_causes[0].get('cause', '')}")
+            if primary.recommended_fixes:
+                self.logger.info(f"[{round_num}]   Recommended fix: {primary.recommended_fixes[0].get('fix', '')}")
+
             # Get recent attempts for history (limit to history_size)
             recent_attempts = list(self.attempt_history)[-self.history_size :]
 
@@ -426,7 +546,7 @@ class OptimizationOrchestrator:
             )
 
             # Extract config from current kernel for tracking changes
-            current_config = extract_triton_config(current_kernel)
+            current_config = extract_kernel_config(current_kernel, self.kernel_language)
 
             # RAG retrieval
             rag_context = None
@@ -443,6 +563,8 @@ class OptimizationOrchestrator:
                         )
                 except Exception as e:
                     self.logger.warning(f"[{round_num}] RAG retrieval failed: {e}")
+
+            grid_analysis = _compute_grid_analysis(ncu_metrics, self.gpu_specs)
 
             opt_prompt = self.prompt_manager.render_kernel_optimization_prompt(
                 problem_description=problem_description,
@@ -464,6 +586,7 @@ class OptimizationOrchestrator:
                 if self.reflexions
                 else None,
                 rag_context=rag_context,
+                grid_analysis=grid_analysis,
             )
 
             # Save prompt
@@ -476,6 +599,8 @@ class OptimizationOrchestrator:
             if not optimized_kernel:
                 error_feedback = "Failed to extract valid kernel code. Please provide complete kernel wrapped in ```python blocks."
                 continue
+
+            last_generated_kernel = optimized_kernel
 
             # Verify and refine
             success, optimized_kernel, verify_error = self._verify_and_refine(
@@ -516,7 +641,7 @@ class OptimizationOrchestrator:
             )
 
             # Complete the attempt with benchmark results
-            new_config = extract_triton_config(optimized_kernel)
+            new_config = extract_kernel_config(optimized_kernel, self.kernel_language)
             config_changes = {}
             for key in set(current_config.keys()) | set(new_config.keys()):
                 old_val = current_config.get(key)
@@ -545,6 +670,9 @@ class OptimizationOrchestrator:
                     "memory_sol_pct", 0.0
                 )
                 current_attempt.combined_sol_pct = new_sol
+                raw_ncu = new_kernel_metrics.get("ncu_metrics")
+                if raw_ncu:
+                    last_ncu_flat = _get_target_kernel_metrics(raw_ncu)
 
             # Add attempt to history
             self.attempt_history.append(current_attempt)
@@ -626,7 +754,7 @@ class OptimizationOrchestrator:
                 )
                 if final_profiler_results and final_profiler_results.metrics:
                     best_ncu_metrics = final_profiler_results.metrics
-                    final_flat_metrics = _get_triton_kernel_metrics(best_ncu_metrics)
+                    final_flat_metrics = _get_target_kernel_metrics(best_ncu_metrics)
                     final_roofline = self.roofline_analyzer.analyze(
                         ncu_metrics=final_flat_metrics,
                     )
@@ -638,7 +766,7 @@ class OptimizationOrchestrator:
                     )
 
         # Final results - use best runtime kernel as primary result
-        return self._finalize_results(
+        success, best_kernel, perf_metrics = self._finalize_results(
             best_runtime_kernel,
             best_runtime_time,
             best_runtime_sol,
@@ -654,6 +782,15 @@ class OptimizationOrchestrator:
             early_stop_reason,
             any_verified,
         )
+        if last_generated_kernel:
+            perf_metrics["last_generated_kernel"] = last_generated_kernel
+        if last_ncu_flat:
+            perf_metrics["last_ncu_flat"] = last_ncu_flat
+        if baseline_ncu_flat:
+            perf_metrics["baseline_ncu_flat"] = baseline_ncu_flat
+        if pytorch_ncu_flat:
+            perf_metrics["pytorch_ncu_flat"] = pytorch_ncu_flat
+        return success, best_kernel, perf_metrics
 
     def _benchmark_baseline(
         self, kernel_code: str, problem_file: Path, known_kernel_time: float | None
@@ -664,6 +801,8 @@ class OptimizationOrchestrator:
             Tuple of (best_time, baseline_results, pytorch_baseline_time, baseline_sol)
         """
         baseline_sol = 0.0
+        baseline_ncu_flat: dict[str, Any] = {}
+        pytorch_ncu_flat: dict[str, Any] = {}
 
         if known_kernel_time and known_kernel_time != float("inf"):
             best_time = known_kernel_time
@@ -694,6 +833,9 @@ class OptimizationOrchestrator:
                 f"📊 Baseline SOL: {baseline_sol:.1f}% ({bottleneck}-bound, "
                 f"Compute: {compute_sol:.1f}%, Memory: {memory_sol:.1f}%)"
             )
+            raw_ncu = baseline_metrics.get("ncu_metrics")
+            if raw_ncu:
+                baseline_ncu_flat = _get_target_kernel_metrics(raw_ncu)
 
         # PyTorch baseline
         if self.pytorch_baseline_time is not None:
@@ -712,7 +854,18 @@ class OptimizationOrchestrator:
             else:
                 pytorch_baseline_time = None
 
-        return best_time, baseline_results, pytorch_baseline_time, baseline_sol
+        # Profile PyTorch baseline with NCU
+        pytorch_ncu_result = self._profile_pytorch_for_ncu(problem_file)
+        if pytorch_ncu_result:
+            raw_pytorch_ncu = pytorch_ncu_result.get("ncu_metrics")
+            if raw_pytorch_ncu:
+                pytorch_ncu_flat = _get_target_kernel_metrics(raw_pytorch_ncu)
+            if pytorch_ncu_flat:
+                bottleneck = pytorch_ncu_result.get("bottleneck", "unknown")
+                sol = pytorch_ncu_result.get("efficiency_pct", 0.0)
+                self.logger.info(f"📊 PyTorch NCU SOL: {sol:.1f}% ({bottleneck}-bound)")
+
+        return best_time, baseline_results, pytorch_baseline_time, baseline_sol, baseline_ncu_flat, pytorch_ncu_flat
 
     def _profile_and_analyze(
         self,
@@ -830,7 +983,7 @@ class OptimizationOrchestrator:
                 return None
 
             ncu_metrics = profiler_results.metrics
-            flat_metrics = _get_triton_kernel_metrics(ncu_metrics)
+            flat_metrics = _get_target_kernel_metrics(ncu_metrics)
 
             # Run roofline analysis
             roofline_result = self.roofline_analyzer.analyze(ncu_metrics=flat_metrics)
@@ -848,6 +1001,37 @@ class OptimizationOrchestrator:
             self.logger.warning(f"[{round_num}] SOL profiling failed: {e}")
             return None
 
+    def _profile_pytorch_for_ncu(self, problem_file: Path) -> dict[str, Any] | None:
+        """Profile the PyTorch eager baseline with NCU.
+
+        Creates a temporary kernel wrapper that calls the problem's Model forward
+        pass, then reuses the SOL profiling pipeline so the NCU metrics use the
+        same collection path as optimized kernels.
+        """
+        try:
+            parent = repr(str(problem_file.parent))
+            module = repr(problem_file.stem)
+            pytorch_wrapper_code = f"""\
+import importlib, sys, torch
+sys.path.insert(0, {parent})
+_m = importlib.import_module({module})
+_init_inputs = _m.get_init_inputs() or []
+_model = _m.Model(*_init_inputs) if _init_inputs else _m.Model()
+_inputs = _m.get_inputs()
+_dtype = next((x.dtype for x in _inputs if isinstance(x, torch.Tensor) and x.is_floating_point()), None)
+if _dtype is not None:
+    _model = _model.to(_dtype)
+_model = _model.cuda().eval()
+
+def kernel_function(*inputs):
+    with torch.no_grad():
+        return _model(*inputs)
+"""
+            return self._profile_kernel_for_sol(pytorch_wrapper_code, problem_file, -1)
+        except Exception as e:
+            self.logger.warning(f"PyTorch NCU profiling failed: {e}")
+            return None
+
     def _generate_optimized_kernel(self, opt_prompt: str, round_num: int) -> str | None:
         """Generate optimized kernel from LLM."""
         self.logger.info(f"[{round_num}] Generating optimized kernel...")
@@ -862,6 +1046,8 @@ class OptimizationOrchestrator:
             response_file = self.artifact_dir / f"round{round_num:03d}_opt_reply.txt"
             with open(response_file, "w") as f:
                 f.write(response_text)
+
+            self.logger.info(f"[{round_num}] LLM response:\n{response_text}")
 
             # Extract code
             optimized_kernel = self.verification_worker._extract_code_from_response(

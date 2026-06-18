@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Kernel backend registry for generated kernel source dialects."""
+"""Kernel language registry for generated kernel source dialects."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class KernelBackendConfig:
+class KernelLanguageConfig:
     """Configuration for the language/framework used to write generated kernels."""
 
     name: str
@@ -99,8 +99,8 @@ _TILELANG_COMPOSITION_TIPS = """\
   in TileLang kernels."""
 
 
-KERNEL_BACKENDS: dict[str, KernelBackendConfig] = {
-    "triton": KernelBackendConfig(
+KERNEL_LANGUAGES: dict[str, KernelLanguageConfig] = {
+    "triton": KernelLanguageConfig(
         name="triton",
         display_name="Triton",
         generation_template="backend/triton/kernel_generation.j2",
@@ -110,7 +110,7 @@ KERNEL_BACKENDS: dict[str, KernelBackendConfig] = {
         composition_requirements=_TRITON_COMPOSITION_REQUIREMENTS,
         composition_tips=_TRITON_COMPOSITION_TIPS,
     ),
-    "cutedsl": KernelBackendConfig(
+    "cutedsl": KernelLanguageConfig(
         name="cutedsl",
         display_name="cuteDSL",
         generation_template="backend/cutedsl/kernel_generation.j2",
@@ -120,7 +120,7 @@ KERNEL_BACKENDS: dict[str, KernelBackendConfig] = {
         composition_requirements=_CUTEDSL_COMPOSITION_REQUIREMENTS,
         composition_tips=_CUTEDSL_COMPOSITION_TIPS,
     ),
-    "tilelang": KernelBackendConfig(
+    "tilelang": KernelLanguageConfig(
         name="tilelang",
         display_name="TileLang",
         generation_template="backend/tilelang/kernel_generation.j2",
@@ -133,15 +133,15 @@ KERNEL_BACKENDS: dict[str, KernelBackendConfig] = {
 }
 
 
-def get_kernel_backend(name: str) -> KernelBackendConfig:
-    """Get kernel backend configuration by name."""
+def get_kernel_language_config(name: str) -> KernelLanguageConfig:
+    """Get kernel language configuration by name."""
     key = name.strip().lower()
-    if key not in KERNEL_BACKENDS:
-        available = ", ".join(sorted(KERNEL_BACKENDS.keys()))
-        raise ValueError(f"Unknown kernel backend '{name}'. Available: {available}")
-    return KERNEL_BACKENDS[key]
+    if key not in KERNEL_LANGUAGES:
+        available = ", ".join(sorted(KERNEL_LANGUAGES.keys()))
+        raise ValueError(f"Unknown kernel language '{name}'. Available: {available}")
+    return KERNEL_LANGUAGES[key]
 
 
-def get_kernel_backend_choices() -> list[str]:
-    """Get available kernel backend names for CLI choices."""
-    return sorted(KERNEL_BACKENDS.keys())
+def get_kernel_language_choices() -> list[str]:
+    """Get available kernel language names for CLI choices."""
+    return sorted(KERNEL_LANGUAGES.keys())
