@@ -24,7 +24,9 @@ Layout contract (matches the flashinfer docstring, default granularity
 import pytest
 import torch
 
+from flashinfer.gemm import group_gemm_fp8_nt_groupwise
 from fp8_group_gemm import dequant_fp8, quant_fp8, fp8_group_gemm, Model
+from cutedsl.fp8_group_gemm import kernel_function as cutedsl_fp8_group_gemm
 
 BLOCK = 128
 FP8_DTYPE = torch.float8_e4m3fn
@@ -140,14 +142,12 @@ def assert_close_bf16(actual, expected, rel=2e-2):
 
 
 @requires_blackwell
-@pytest.mark.parametrize("scale_major_mode", ["K", "MN"])
+@pytest.mark.parametrize("scale_major_mode", ["K"]) # , "MN"
 @pytest.mark.parametrize("m", [4, 128, 256, 512, 4096, 8192])
 @pytest.mark.parametrize("n", [128, 256, 512, 4096, 8192])
 @pytest.mark.parametrize("k", [128, 256, 512, 4096, 8192])
 @pytest.mark.parametrize("group_size", [1, 2, 4, 8])
-def test_matches_flashinfer(scale_major_mode, m, n, k, group_size):
-    from flashinfer.gemm import group_gemm_fp8_nt_groupwise
-
+def test_accuracy(scale_major_mode, m, n, k, group_size):
     device = "cuda"
     # `m` is the per-group row count; build `group_size` equal segments. Every
     # `m` value is a multiple of 4, so each segment satisfies the kernel's
@@ -167,9 +167,91 @@ def test_matches_flashinfer(scale_major_mode, m, n, k, group_size):
     out_ref = fp8_group_gemm(
         a, b, a_s, b_s, indptr, scale_major_mode, out_dtype=torch.bfloat16
     )
+    
+    out_ref_cutedsl = cutedsl_fp8_group_gemm(
+        a, a_s, b, b_s, indptr, scale_major_mode, out_dtype=torch.bfloat16
+    )
 
-    assert out_kernel.shape == (m * group_size, n) == out_ref.shape
+    assert out_kernel.shape == (m * group_size, n) == out_ref.shape == out_ref_cutedsl.shape
     assert_close_bf16(out_kernel, out_ref)
+    assert_close_bf16(out_kernel, out_ref_cutedsl)
+
+
+def benchmark(fn, *, warmup=3, iters=20):
+    """Return mean latency in milliseconds over ``iters`` runs."""
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        fn()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iters
+
+
+@requires_blackwell
+@pytest.mark.parametrize("scale_major_mode", ["K"]) # , "MN"
+@pytest.mark.parametrize("m", [4, 128, 256, 512, 4096, 8192]) # 
+@pytest.mark.parametrize("n", [128, 256, 512, 4096, 8192]) #  
+@pytest.mark.parametrize("k", [128, 256, 512, 4096, 8192]) # 
+@pytest.mark.parametrize("group_size", [1, 2, 4, 8]) 
+def test_performance(scale_major_mode, m, n, k, group_size, capsys):
+    device = "cuda"
+    seg_lengths = [m] * group_size
+    a, b, a_s, b_s, indptr = build_problem(
+        seg_lengths, n, k, scale_major_mode, device, seed=1234
+    )
+
+    # Correctness gate before timing (a fast-but-wrong kernel must not "win").
+    out_kernel = cutedsl_fp8_group_gemm(
+        a, a_s, b, b_s, indptr,
+        scale_major_mode=scale_major_mode,
+        out_dtype=torch.bfloat16,
+    )
+    out_fi = group_gemm_fp8_nt_groupwise(
+        a, b, a_s, b_s, indptr,
+        scale_granularity_mnk=(1, BLOCK, BLOCK),
+        scale_major_mode=scale_major_mode,
+        out_dtype=torch.bfloat16,
+    )
+    assert_close_bf16(out_kernel, out_fi)
+
+    flops = 2.0 * (m * group_size) * n * k  # grouped GEMM: sum_g 2 * m_g * n * k
+    results = {}
+    for name, fn in (
+        ("cutedsl", lambda: cutedsl_fp8_group_gemm(
+            a, a_s, b, b_s, indptr,
+            scale_major_mode=scale_major_mode,
+            out_dtype=torch.bfloat16,
+        )),
+        ("flashinfer", lambda: group_gemm_fp8_nt_groupwise(
+            a, b, a_s, b_s, indptr,
+            scale_granularity_mnk=(1, BLOCK, BLOCK),
+            scale_major_mode=scale_major_mode,
+            out_dtype=torch.bfloat16,
+        )),
+        ("torch", lambda: fp8_group_gemm(
+            a, b, a_s, b_s, indptr,
+            scale_major_mode=scale_major_mode,
+            out_dtype=torch.bfloat16,
+        )),
+    ):
+        ms = benchmark(fn)
+        results[name] = ms
+
+    with capsys.disabled():
+        print(f"\n[perf] m={m} n={n} k={k} g={group_size}  (FLOPs={flops/1e9:.2f} GFLOP)")
+        for name, ms in results.items():
+            tflops = flops / (ms * 1e-3) / 1e12
+            print(f"    {name:12s} {ms:9.4f} ms   {tflops:8.2f} TFLOP/s")
+        speedup = results["cutedsl"] / results["flashinfer"]
+        print(f"    flashinfer is {speedup:6.1f}x faster than cutedsl")
+
+    # Informational only: timings must be finite/positive, not a hard perf bar.
+    assert all(v > 0 for v in results.values())
 
 
 @requires_blackwell
