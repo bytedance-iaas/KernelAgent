@@ -1,0 +1,20 @@
+{
+  "name": "gdn_decode_qk4_v8_d128_k_last (flashinfer_beam_search)",
+  "definition": "gdn_decode_qk4_v8_d128_k_last",
+  "author": "kernelAgent",
+  "spec": {
+    "language": "python",
+    "target_hardware": [
+      "nvidia_h200"
+    ],
+    "entry_point": "kernel.py::kernel_function",
+    "destination_passing_style": false,
+    "dependencies": []
+  },
+  "sources": [
+    {
+      "path": "kernel.py",
+      "content": "import torch\nimport triton\nimport triton.language as tl\n\n\n@triton.jit\ndef _gdn_decode_kernel(\n    q_ptr,\n    k_ptr,\n    v_ptr,\n    state_ptr,\n    A_log_ptr,\n    a_ptr,\n    dt_bias_ptr,\n    b_ptr,\n    out_ptr,\n    new_state_ptr,\n    SCALE: tl.constexpr,\n    BLOCK_V: tl.constexpr,\n    BLOCK_K: tl.constexpr,\n    STATE_IS_NONE: tl.constexpr,\n):\n    pid_v = tl.program_id(0)\n    pid_bh = tl.program_id(1)\n\n    batch = pid_bh // 8\n    head = pid_bh - batch * 8\n    qk_head = head // 2\n\n    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)\n    offs_k = tl.arange(0, BLOCK_K)\n    mask_v = offs_v < 128\n\n    x_a = tl.load(a_ptr + batch * 8 + head).to(tl.float32)\n    x_dt = tl.load(dt_bias_ptr + head).to(tl.float32)\n    x = x_a + x_dt\n    softplus_x = tl.where(x > 20.0, x, tl.log(1.0 + tl.exp(x)))\n\n    A = tl.load(A_log_ptr + head).to(tl.float32)\n    g = tl.exp(-tl.exp(A) * softplus_x)\n\n    b_val = tl.load(b_ptr + batch * 8 + head).to(tl.float32)\n    beta = 1.0 / (1.0 + tl.exp(-b_val))\n\n    q_base = batch * 512 + qk_head * 128\n    k_base = batch * 512 + qk_head * 128\n    v_base = batch * 1024 + head * 128\n\n    q_vec = tl.load(q_ptr + q_base + offs_k).to(tl.float32)\n    k_vec = tl.load(k_ptr + k_base + offs_k).to(tl.float32)\n    v_vec = tl.load(v_ptr + v_base + offs_v, mask=mask_v, other=0.0).to(tl.float32)\n\n    state_base = (batch * 8 + head) * 16384\n    state_offsets = state_base + offs_v[:, None] * 128 + offs_k[None, :]\n\n    if STATE_IS_NONE:\n        state_tile = tl.zeros((BLOCK_V, BLOCK_K), dtype=tl.float32)\n    else:\n        state_tile = tl.load(state_ptr + state_offsets, mask=mask_v[:, None], other=0.0).to(tl.float32)\n\n    old_state = state_tile * g\n    old_v = tl.sum(old_state * k_vec[None, :], axis=1)\n    new_v = beta * v_vec + (1.0 - beta) * old_v\n\n    tmp_state = old_state - k_vec[None, :] * old_v[:, None]\n    updated_state = tmp_state + k_vec[None, :] * new_v[:, None]\n\n    out_vals = tl.sum(updated_state * q_vec[None, :], axis=1) * SCALE\n\n    tl.store(new_state_ptr + state_offsets, updated_state, mask=mask_v[:, None])\n\n    out_base = batch * 1024 + head * 128\n    tl.store(out_ptr + out_base + offs_v, out_vals.to(tl.bfloat16), mask=mask_v)\n\n\ndef kernel_function(q, k, v, state, A_log, a, dt_bias, b, scale):\n    output = torch.empty((q.shape[0], 1, 8, 128), device=q.device, dtype=torch.bfloat16)\n\n    if state is None:\n        new_state = torch.empty((q.shape[0], 8, 128, 128), device=q.device, dtype=torch.float32)\n        state_arg = new_state\n        state_is_none = True\n    else:\n        new_state = torch.empty_like(state)\n        state_arg = state\n        state_is_none = False\n\n    scale_val = scale\n    if scale_val is None or scale_val == 0.0:\n        scale_val = 0.08838834764831845\n\n    block_v = 16\n    grid = (triton.cdiv(128, block_v), q.shape[0] * 8)\n\n    _gdn_decode_kernel[grid](\n        q,\n        k,\n        v,\n        state_arg,\n        A_log,\n        a,\n        dt_bias,\n        b,\n        output,\n        new_state,\n        SCALE=scale_val,\n        BLOCK_V=block_v,\n        BLOCK_K=128,\n        STATE_IS_NONE=state_is_none,\n        num_warps=8,\n    )\n\n    return output, new_state"
+    }
+  ]
+}
