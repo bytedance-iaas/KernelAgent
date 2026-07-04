@@ -123,9 +123,10 @@ def run_deep_gemm(kernel_fn, a, b_w4, grouped_layout, gran_k=128):
 
 def run_accuracy(dg_kernel, dg_skip, dsl_kernel, dsl_skip, gran_k=128):
     torch.manual_seed(0)
-    cases = [(groups, m_per_group)
-             for groups in (8, 16, 24, 32)
-             for m_per_group in (128, 256, 512, 1024)]
+    cases = [(8, 128), (8, 256), (8, 512), (8, 1024), (8, 2048),
+              (16, 128), (16, 256), (16, 512), (16, 1024), (16, 2048),
+              (24, 128), (24, 256), (24, 512), (24, 1024), (24, 2048),
+              (32, 128), (32, 256), (32, 512), (32, 1024), (32, 2048)]
 
     failures, skipped, passed = 0, 0, 0
     for groups, m_per_group in cases:
@@ -214,7 +215,10 @@ def _effective_bytes(groups, m_per_group, n, k, gran_k=128):
 
 
 def run_benchmark(dg_kernel, dsl_kernel, gran_k=128):
-    shapes = [(8, 128), (8, 1024), (32, 256)]  # (groups, m_per_group), n/k fixed
+    shapes = [(8, 128), (8, 256), (8, 512), (8, 1024), (8, 2048),
+              (16, 128), (16, 256), (16, 512), (16, 1024), (16, 2048),
+              (24, 128), (24, 256), (24, 512), (24, 1024), (24, 2048),
+              (32, 128), (32, 256), (32, 512), (32, 1024), (32, 2048)]  # (groups, m_per_group), n/k fixed
     n, k = 4096, 7168
     print("\nBenchmark (n=4096, k=7168; CUDA-graph replay timing; informational)")
     print("groups | m/group | subject | us | GB/s | TFLOP/s | timing")
