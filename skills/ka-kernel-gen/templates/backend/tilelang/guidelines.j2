@@ -1,0 +1,53 @@
+TILELANG KERNEL PROGRAMMING GUIDELINES
+
+Use official TileLang-style Python kernel programming.
+
+1. REQUIRED IMPORTS AND ENTRYPOINTS
+   - Import `torch`.
+   - Import `tilelang`.
+   - Import `tilelang.language as T`.
+   - Use `@tilelang.jit` for kernel builder functions.
+   - Kernel builders should return an inner `@T.prim_func`.
+   - The public Python entrypoint must be `kernel_function(...)`; tests import and call only this function.
+
+2. WRAPPER SHAPE
+   - `kernel_function(...)` accepts normal PyTorch tensors and scalars.
+   - The wrapper may validate shapes/dtypes/devices, allocate output tensors, choose static tile sizes, compile/cache TileLang kernels, launch kernels, and return outputs.
+   - The wrapper must not perform numerical computation with PyTorch.
+   - Prefer a small module-level cache or `functools.lru_cache` for specialized TileLang kernels so repeated calls do not recompile.
+
+3. TILELANG PROGRAM SHAPE
+   - A typical builder is:
+     `@tilelang.jit`
+     `def _build_kernel(...):`
+     `    @T.prim_func`
+     `    def main(A: T.Tensor(...), Out: T.Tensor(...)):`
+     `        with T.Kernel(grid_x, grid_y, threads=...) as (...):`
+     `            ...`
+     `    return main`
+   - Use `T.Tensor(shape, dtype)` annotations for kernel arguments.
+   - Use `T.Kernel(...)` to define the launch grid and thread block.
+   - Use TileLang primitives for compute and memory movement.
+
+4. TILELANG PRIMITIVES
+   - Use `T.alloc_shared` for shared memory tiles.
+   - Use `T.alloc_fragment` for register fragments.
+   - Use `T.copy` for global/shared/register movement.
+   - Use `T.clear` to initialize fragments.
+   - Use `T.gemm` for tiled matrix multiplication when applicable.
+   - Use `T.Parallel` for parallel element/tile loops.
+   - Use `T.Pipelined` for staged K/block loops when beneficial.
+   - Use `T.ceildiv` for grid dimensions.
+   - Use TileLang math intrinsics or scalar expressions inside `@T.prim_func`, not PyTorch math.
+
+5. INDEXING AND BOUNDARIES
+   - Map `T.Kernel` block indices to logical tensor tiles.
+   - For elementwise kernels, use `T.Parallel` or thread/block loops to cover all elements.
+   - Guard every load/store that can touch a partial tile.
+   - Preserve exact layout assumptions; default to contiguous row-major unless the problem/test says otherwise.
+
+6. STRICT NO-CHEATING RULES
+   - Do not compute outputs with `torch.nn`, `torch.nn.functional`, `torch.*` math, tensor arithmetic, reductions, activations, pooling, `torch.ops.aten.*`, or hidden PyTorch helper functions.
+   - Do not import or generate Triton code.
+   - Do not import or generate CUTLASS CuTe DSL code.
+   - PyTorch is allowed only for allocation, validation, device/dtype checks, and reference code inside tests.

@@ -1,0 +1,73 @@
+CUTLASS CuTe DSL KERNEL PROGRAMMING GUIDELINES
+
+Use the official CUTLASS Python CuTe DSL style.
+
+1. REQUIRED IMPORTS AND ENTRYPOINTS
+   - Import `torch`, `cutlass`, and `cutlass.cute as cute`.
+   - If explicit framework conversion is useful, import `from cutlass.cute.runtime import from_dlpack`.
+   - Define GPU work with `@cute.kernel`.
+   - Define host-side compiled launch helpers with `@cute.jit` when needed.
+   - The public Python entrypoint must be `kernel_function(...)`; tests import and call only this function.
+
+2. WRAPPER SHAPE
+   - `kernel_function(...)` accepts normal PyTorch tensors and scalars.
+   - The wrapper may validate shape/dtype/device, allocate output tensors, compute integer sizes, choose `grid` and `block`, convert tensors with `from_dlpack`, and launch CuTe DSL code.
+   - The wrapper must not perform numerical computation with PyTorch.
+   - Return PyTorch tensors that share the output buffers written by the CuTe DSL kernel.
+
+3. TENSOR CONVERSION
+   - Prefer explicit conversion in wrappers:
+     `x_cute = from_dlpack(x).mark_layout_dynamic()` for general strided tensors.
+   - Use `mark_compact_shape_dynamic(...)` when the tensor is contiguous/compact and some modes should stay specialized.
+   - For tiny fixed-shape kernels, implicit DLPack conversion by passing PyTorch tensors to a `@cute.jit` helper is acceptable, but explicit conversion is clearer for generated code.
+   - Preserve the lifetime of original PyTorch tensors while CuTe tensors are used.
+
+4. KERNEL SIGNATURE AND TYPES
+   - Annotate CuTe tensor arguments as `cute.Tensor`.
+   - Annotate runtime scalar sizes with CUTLASS numeric types such as `cutlass.Int32` when useful.
+   - Annotate compile-time constants, tile sizes, ranks, and fused epilogue functions with `cutlass.Constexpr`.
+   - Keep static values static so JIT caching and specialization work well.
+
+5. LAUNCH AND INDEXING
+   - Launch `@cute.kernel` functions with explicit `grid=[...]` and `block=[...]`.
+   - Use `cute.arch.thread_idx()`, `cute.arch.block_idx()`, and `cute.arch.block_dim()` for thread/block coordinates.
+   - Compute linear or multidimensional element coordinates from block/thread coordinates.
+   - Guard all edge tiles with `if idx < n` or equivalent predicates.
+   - Use `cluster`, `smem`, `max_number_threads`, or `min_blocks_per_mp` only when the kernel actually needs them.
+
+6. CUTE MEMORY AND MATH
+   - Use CuTe tensors, layouts, register tensors, and copy primitives; avoid raw Python list math for per-element GPU work.
+   - For tile code, use `cute.make_layout`, `cute.make_tensor`, `cute.make_rmem_tensor`, `cute.make_rmem_tensor_like`, `cute.copy`, `cute.make_identity_tensor`, and predication as appropriate.
+   - Use CuTe/CUTLASS math primitives, `cute.where` for predicated selection, reductions, or arch intrinsics instead of PyTorch math.
+   - For GEMM-like kernels, use tiled accumulation in fp32 and CuTe/CUTLASS MMA abstractions when feasible.
+
+7. CONTROL FLOW AND DEBUGGING
+   - The CuTe DSL preprocessor can preserve structured loops and branches for `@jit` and `@kernel`; use simple Python `for`/`if` that depends on tensor sizes, thread ids, or constexpr values.
+   - Use Python `print()` only for compile/meta-stage diagnostics.
+   - Use `cute.printf()` only for GPU runtime debugging and remove or minimize it in final code.
+
+8. STRICT NO-CHEATING RULES
+   - Do not compute outputs with `torch.nn`, `torch.nn.functional`, `torch.*` math, tensor arithmetic, reductions, activations, pooling, `torch.ops.aten.*`, or hidden PyTorch helper functions.
+   - PyTorch is allowed only for allocation, validation, device/dtype checks, and reference code inside tests.
+
+9. COMPILATION AND CACHING (PERFORMANCE-CRITICAL)
+   - Calling an `@cute.jit` function re-traces and re-JITs on every invocation. This can cost tens of milliseconds and will dominate (and dwarf) the actual kernel runtime, making an otherwise-fast kernel benchmark slower than a plain PyTorch reference.
+   - For any kernel called more than once (benchmarks, loops, per-group launches), compile once with `compiled = cute.compile(launch_fn, *args)` and reuse `compiled(...)`. Do NOT call the `@cute.jit` helper directly in a hot path.
+   - Cache compiled callables in a module-level dict keyed by everything baked into the kernel: tensor *shapes*, the `Constexpr` grid, tile sizes, and dtypes. `mark_layout_dynamic` only makes strides dynamic; shapes are specialized, so different shapes need different cache entries (or use `mark_compact_shape_dynamic` to make shapes dynamic with a divisibility hint).
+   - CuTe tensor wrappers from `from_dlpack(...)` are consumed by compile/launch. Build a fresh argument tuple for the `cute.compile` call and another fresh tuple for the actual `compiled(...)` call; do not reuse the same wrappers.
+   - `Constexpr` arguments are baked at compile time and must NOT be passed to the compiled callable. Split args into dynamic-only (tensors, `cutlass.Int32` sizes) and constexpr (tile sizes, grid, ranks); pass both to `cute.compile`, but pass only the dynamic ones to `compiled(...)`.
+
+10. GRID, BLOCK, AND SHARED MEMORY UNDER cute.compile
+    - When a kernel uses shared memory (`cutlass.utils.SmemAllocator`), make the grid dimensions `Constexpr`, not runtime `cutlass.Int32`. A runtime grid combined with shared memory can corrupt the launch configuration under `cute.compile`, producing nondeterministic `cuLaunchKernelEx` segfaults or partially-written output. Bake the grid per shape instead.
+    - Compute integer grid sizes (e.g. `ceil_div`) on the host and pass them as `Constexpr`; reserve runtime `Int32` grids for kernels without shared memory.
+    - Pass `mark_layout_dynamic(leading_dim)` explicitly when a tensor has size-1 modes (e.g. a per-block scale tensor whose block count is 1), otherwise leading-dim deduction raises.
+
+11. NARROW-TYPE (FP8) CONVERSION
+    - Widening a single fp8 scalar with `value.to(cutlass.Float32)` fails MLIR verification: `nvgpu.cvt_fpext` requires a 32-bit-aligned vector operand (>= 4 packed fp8 elements), not a scalar.
+    - Convert in packed groups: load >= 4 contiguous fp8 values into a register fragment (`frag = cute.make_rmem_tensor(VEC, cutlass.Float8E4M3FN)`), then widen the whole vector with `frag.load().to(cutlass.Float32)`. Choose `VEC` as a multiple of 4 that divides the quantization block so per-tile scales stay constant within a chunk.
+    - Allocate such fragments once before a loop and reuse them rather than re-allocating each iteration.
+
+12. PERFORMANCE PATTERNS
+    - Hand-rolled scalar element indexing is acceptable for correctness but is slow; prefer shared-memory tiling with register micro-tiles (e.g. BM=BN=64, BK=32, 16x16 threads each owning a 4x4 fp32 accumulator) and fold dequant scales in during the gmem->smem load.
+    - For grouped/batched ops, prefer a single fused launch over a Python loop of per-group launches: use the grid z-dimension to select the group and read offset metadata (e.g. `m_indptr`) on device, sizing the grid to the largest group and early-exiting smaller ones. This removes per-group dispatch overhead that otherwise dominates small problems.
+    - Accumulate in fp32 and cast to the output dtype only on write-back.

@@ -1,0 +1,111 @@
+{{ backend_guidelines }}
+
+TASK: Generate one complete Python file implementing the requested operation with CUTLASS CuTe DSL.
+
+The result must be importable as `kernel.py` and must define:
+
+```python
+def kernel_function(...):
+    ...
+```
+
+TEST CODE:
+Analyze this test to determine the exact signature, shapes, dtypes, devices, return type, and tolerances:
+
+```python
+{{ test_code }}
+```
+
+PROBLEM DESCRIPTION:
+```text
+{{ problem_description }}
+```
+
+OUTPUT FORMAT REQUIREMENTS:
+- Return exactly one fenced Python code block.
+- The file must be self-contained.
+- Do not include prose outside the code block.
+- Do not generate Triton code. Do not import `triton` or `triton.language`.
+- Do not generate CUDA C++ strings or call external compilers.
+
+MANDATORY CuTe DSL STRUCTURE:
+1. Imports:
+   - `import torch`
+   - `import cutlass`
+   - `import cutlass.cute as cute`
+   - Prefer `from cutlass.cute.runtime import from_dlpack`
+2. At least one `@cute.kernel` function does the numerical work.
+3. Optional `@cute.jit` host helper may prepare/launch kernels or specialize constexpr values.
+4. `kernel_function(...)` must:
+   - accept regular PyTorch tensors/scalars;
+   - allocate PyTorch output tensor(s);
+   - convert tensors to CuTe tensors, preferably with `from_dlpack(...).mark_layout_dynamic()`;
+   - compute `grid=[...]` and `block=[...]`;
+   - launch the CuTe kernel;
+   - return the output tensor(s).
+
+PREFERRED SKELETON TO ADAPT:
+```python
+import torch
+import cutlass
+import cutlass.cute as cute
+from cutlass.cute.runtime import from_dlpack
+
+
+@cute.kernel
+def _kernel(x: cute.Tensor, out: cute.Tensor, n: cutlass.Int32):
+    tx, _, _ = cute.arch.thread_idx()
+    bx, _, _ = cute.arch.block_idx()
+    bdx, _, _ = cute.arch.block_dim()
+    idx = bx * bdx + tx
+    if idx < n:
+        # Replace this with CuTe tensor load/compute/store logic.
+        # Use CuTe tensor operations, cute.where, cute.copy, layouts,
+        # register tensors, and predicates as appropriate.
+        pass
+
+
+def kernel_function(x):
+    out = torch.empty_like(x)
+    n = x.numel()
+    block = [256, 1, 1]
+    grid = [(n + block[0] - 1) // block[0], 1, 1]
+    x_cute = from_dlpack(x).mark_layout_dynamic()
+    out_cute = from_dlpack(out).mark_layout_dynamic()
+    _kernel(x_cute, out_cute, n, grid=grid, block=block)
+    return out
+```
+
+The skeleton is only a shape guide. Replace `pass` with real CuTe DSL computation and adapt the signature to the test.
+
+COMPUTATION RULES:
+- All math must happen in CuTe DSL kernels or CuTe DSL JIT helpers.
+- Use `cute.arch.thread_idx`, `cute.arch.block_idx`, `cute.arch.block_dim` for thread mapping.
+- Use `cutlass.Constexpr` for tile sizes, ranks, layouts, and compile-time options.
+- Use `cute.Tensor` annotations for tensor arguments.
+- Use `cute.where` for predicated elementwise selection such as ReLU.
+- For reductions, use a numerically stable CuTe implementation and avoid PyTorch reductions.
+- For softmax, use max-subtract-exp-sum normalization in CuTe DSL.
+- For matmul/GEMM, prefer tiled fp32 accumulation and CuTe/CUTLASS MMA abstractions when feasible.
+- For edge tiles, guard every load/store with predicates.
+- For dynamic shapes/strides, use `mark_layout_dynamic()`; for compact contiguous shapes, consider `mark_compact_shape_dynamic(...)`.
+
+FUSION PRIORITY:
+- Fuse compatible adjacent ops into the same CuTe kernel when feasible.
+- Split into multiple CuTe kernels only when fusion would break correctness or require unavailable primitives; explain the reason in a short code comment.
+
+STRICTLY FORBIDDEN:
+- No PyTorch numerical compute in `kernel_function` or helpers.
+- No `torch.add`, `torch.mul`, `torch.sum`, `torch.matmul`, `torch.mm`, `torch.bmm`, `torch.einsum`, tensor arithmetic, activations, pooling, normalization, or `torch.ops.aten.*`.
+- No `torch.nn` or `torch.nn.functional`.
+- No fake/mock implementation that returns input or `True`.
+{% if no_cusolver %}
+- Do not rely on cuSolver libraries (`torch.linalg.svd`, `torch.linalg.eigh`, etc.).
+{% endif %}
+
+{% if kernel_guidance %}
+PLATFORM GUIDANCE:
+{{ kernel_guidance }}
+{% endif %}
+
+Generate the complete CuTe DSL Python file now.

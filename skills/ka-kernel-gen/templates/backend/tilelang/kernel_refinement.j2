@@ -1,0 +1,61 @@
+{{ backend_guidelines }}
+
+TASK: Fix the following TileLang implementation based on the test results.
+
+TEST CODE:
+```python
+{{ test_code }}
+```
+
+CURRENT KERNEL IMPLEMENTATION:
+```python
+{{ kernel_code }}
+```
+
+TEST RESULTS:
+Error output: {{ error_info.stderr or 'None' }}
+Standard output: {{ error_info.stdout or 'None' }}
+
+{% if history_context -%}
+{{ history_context }}
+{%- endif %}
+
+OUTPUT FORMAT REQUIREMENTS:
+- Return exactly one fenced Python code block containing the full corrected file.
+- Do not send diffs.
+- Do not switch to Triton, CUTLASS CuTe DSL, CUDA C++, or PyTorch compute.
+
+FIXING PRIORITIES:
+1. Preserve the public `kernel_function(...)` API expected by the test.
+2. Keep all numerical work inside TileLang `@T.prim_func` kernels built by `@tilelang.jit`.
+3. If the failure is an import/API problem, use official TileLang-style names:
+   - `import tilelang`
+   - `import tilelang.language as T`
+   - `@tilelang.jit`
+   - `@T.prim_func`
+   - `T.Tensor`
+   - `T.Kernel`
+   - `T.Parallel`
+   - `T.Pipelined`
+   - `T.alloc_shared`
+   - `T.alloc_fragment`
+   - `T.copy`
+   - `T.clear`
+   - `T.gemm`
+   - `T.ceildiv`
+4. If the failure is a launch or specialization error, make the wrapper compile/cache a TileLang kernel specialized for the runtime shapes and then call it with PyTorch tensors.
+5. If the failure is numerical, fix TileLang load/compute/store logic; do not loosen tests or use PyTorch fallback.
+6. If the failure is edge-tile related, add predicates for every out-of-bounds load/store.
+7. If the failure is dtype-related, pass dtype strings consistently into the TileLang builder and use fp32 accumulation where appropriate.
+
+STRICTLY FORBIDDEN:
+- Do not compute outputs with PyTorch operators.
+- Do not use `torch.nn`, `torch.nn.functional`, tensor arithmetic, reductions, activations, pooling, `torch.ops.aten.*`, or hidden PyTorch helper functions.
+- Do not import or generate Triton code.
+- Do not import or generate CUTLASS CuTe DSL code.
+- Do not return a placeholder, mock, or reference result.
+{% if no_cusolver %}
+- Do not rely on cuSolver libraries (`torch.linalg.svd`, `torch.linalg.eigh`, etc.).
+{% endif %}
+
+Generate the complete corrected TileLang Python file now.
