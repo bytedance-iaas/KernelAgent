@@ -1,0 +1,21 @@
+[submodule "reference/cuda/flash-attention"]
+	path = reference/cuda/flash-attention
+	url = https://github.com/Dao-AILab/flash-attention.git
+[submodule "reference/cuda/flashinfer"]
+	path = reference/cuda/flashinfer
+	url = https://github.com/flashinfer-ai/flashinfer.git
+[submodule "reference/cuda/sgl-DeepGEMM"]
+	path = reference/cuda/sgl-DeepGEMM
+	url = https://github.com/sgl-project/DeepGEMM.git
+[submodule "skills/KernelWiki"]
+	path = skills/KernelWiki
+	url = https://github.com/mit-han-lab/KernelWiki.git
+[submodule "skills/ncu-report-skill"]
+	path = skills/ncu-report-skill
+	url = https://github.com/mit-han-lab/ncu-report-skill.git
+[submodule "skills/ptx-isa-markdown"]
+	path = skills/ptx-isa-markdown
+	url = https://github.com/technillogue/ptx-isa-markdown.git
+[submodule "examples/KernelBench"]
+	path = examples/KernelBench
+	url = https://github.com/ScalingIntelligence/KernelBench.git
