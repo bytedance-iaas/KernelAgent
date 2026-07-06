@@ -12,6 +12,7 @@ import torch.nn as nn
 
 PROBLEM_NAME = '033_post_norm_residual'
 CUSTOM_INPUTS_ENTRYPOINT = None
+BLOB_ROOT = None   # override with env SOLBENCH_BLOB_ROOT
 AXES = json.loads(r"""{
     "batch_size": {
         "type": "var",
@@ -66,7 +67,7 @@ INPUT_SPECS = json.loads(r"""{
     }
 }""")
 WORKLOADS = [json.loads(line) for line in r"""
-{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
+{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}, "latency": {"h200": {"baseline": 0.98, "target": 0.12}}}
 {"uuid": "371a388c-51f0-5416-a9eb-926337939aee", "axes": {"batch_size": 8, "seq_len": 2048}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
 {"uuid": "11183480-fb43-5c20-a887-7226134c5fc1", "axes": {"batch_size": 32, "seq_len": 256}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0034, "max_rtol": 0.05}}
 {"uuid": "ad827ab9-fb43-5e7f-8ab3-c5ca544ad5cb", "axes": {"batch_size": 8, "seq_len": 997}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.009800000000000001, "max_rtol": 0.05}}
@@ -180,6 +181,21 @@ def _heuristic_tensor(name, shape, dtype, device, description=""):
     return None
 
 
+_ST_CACHE = {}
+
+
+def _load_safetensor(rel_path: str, tensor_key: str, device: str):
+    import os
+    from safetensors.torch import load_file
+    root = os.environ.get("SOLBENCH_BLOB_ROOT", BLOB_ROOT)
+    if root is None:
+        raise RuntimeError("safetensors input needs SOLBENCH_BLOB_ROOT")
+    full = os.path.join(root, rel_path)
+    if full not in _ST_CACHE:
+        _ST_CACHE[full] = load_file(full)
+    return _ST_CACHE[full][tensor_key].to(device)
+
+
 def build_workload_inputs(workload_idx: int = 0, device: str = "cuda"):
     """Build the ordered input list for one workload (deterministic)."""
     wl = WORKLOADS[workload_idx]
@@ -209,6 +225,9 @@ def build_workload_inputs(workload_idx: int = 0, device: str = "cuda"):
             val = custom[name]
             args.append(val.to(device) if torch.is_tensor(val) else val)
             continue
+        if kind == "safetensors":
+            args.append(_load_safetensor(gen["path"], gen["tensor_key"], device))
+            continue
         if spec["shape"] is None or kind == "scalar":
             args.append(gen.get("value"))
             continue
@@ -228,6 +247,28 @@ def build_workload_inputs(workload_idx: int = 0, device: str = "cuda"):
 def workload_tolerance(workload_idx: int = 0):
     tol = WORKLOADS[workload_idx].get("tolerance", {})
     return float(tol.get("max_atol", 1e-2)), float(tol.get("max_rtol", 5e-2))
+
+
+def gpu_key():
+    """Normalized GPU key for latency-target lookup (e.g. 'h200', 'b200')."""
+    name = torch.cuda.get_device_name(0).lower()
+    for wl in WORKLOADS:
+        for key in wl.get("latency", {}):
+            if key.lower() in name:
+                return key
+    return None
+
+
+def workload_latency(workload_idx: int = 0, key: str = None):
+    """(baseline_ms, target_ms) for this workload on the given/current GPU,
+    or None when the workload carries no target for it."""
+    key = key or gpu_key()
+    if key is None:
+        return None
+    spec = WORKLOADS[workload_idx].get("latency", {}).get(key)
+    if spec is None:
+        return None
+    return float(spec["baseline"]), float(spec["target"])
 
 
 # ---- reference implementation (verbatim from problem.md) ---- #

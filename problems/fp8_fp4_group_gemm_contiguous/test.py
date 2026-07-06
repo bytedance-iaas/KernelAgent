@@ -47,7 +47,7 @@ _REPO = _HERE.parents[2]
 # Load the problem module (the Model under test).
 _spec = importlib.util.spec_from_file_location(
     "fp8_fp4_group_gemm_contiguous",
-    _HERE / "pytorch" / "fp8_fp4_group_gemm_contiguous.py")
+    _HERE / "problem.py")
 problem = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(problem)
 
@@ -87,7 +87,7 @@ def _cutedsl_kernel_available():
     try:
         spec = importlib.util.spec_from_file_location(
             "cutedsl_fp8_fp4_group_gemm_contiguous",
-            _HERE / "cutedsl" / "fp8_fp4_group_gemm_contiguous.py")
+            _HERE / "h200" / "cutedsl" / "fp8_fp4_group_gemm_contiguous.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
     except Exception as exc:  # noqa: BLE001
