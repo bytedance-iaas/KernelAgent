@@ -19,3 +19,6 @@
 [submodule "examples/KernelBench"]
 	path = examples/KernelBench
 	url = https://github.com/ScalingIntelligence/KernelBench.git
+[submodule "examples/SOL-ExecBench"]
+	path = examples/SOL-ExecBench
+	url = https://github.com/NVIDIA/SOL-ExecBench.git
