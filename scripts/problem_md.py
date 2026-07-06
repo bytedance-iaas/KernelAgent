@@ -434,6 +434,28 @@ def workload_tolerance(workload_idx: int = 0):
     return float(tol.get("max_atol", 1e-2)), float(tol.get("max_rtol", 5e-2))
 
 
+def gpu_key():
+    """Normalized GPU key for latency-target lookup (e.g. 'h200', 'b200')."""
+    name = torch.cuda.get_device_name(0).lower()
+    for wl in WORKLOADS:
+        for key in wl.get("latency", {{}}):
+            if key.lower() in name:
+                return key
+    return None
+
+
+def workload_latency(workload_idx: int = 0, key: str = None):
+    """(baseline_ms, target_ms) for this workload on the given/current GPU,
+    or None when the workload carries no target for it."""
+    key = key or gpu_key()
+    if key is None:
+        return None
+    spec = WORKLOADS[workload_idx].get("latency", {{}}).get(key)
+    if spec is None:
+        return None
+    return float(spec["baseline"]), float(spec["target"])
+
+
 # ---- reference implementation (verbatim from problem.md) ---- #
 
 {reference}
@@ -537,6 +559,82 @@ if __name__ == "__main__":
 '''
 
 
+_PERF_TEST_TEMPLATE = '''"""Auto-generated from {md_name} by scripts/problem_md.py - do not edit.
+
+Performance goal gate for GPU spec {gpu_key!r} (this file lives in the
+<problem>/{gpu_key}/ subfolder and is pinned to that spec). Benchmarks
+`kernel.kernel_function` from the PARENT problem directory on every
+workload carrying a {gpu_key!r} latency target (ms). Exit 0 iff every
+target is met; exit 2 when run on a different GPU. This is the goal
+gate for the ka-kernel-opt pipeline; it is NOT a correctness test -
+run test.py for accuracy.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import torch
+
+import problem
+from kernel import kernel_function
+
+GPU_KEY = {gpu_key!r}
+
+
+def bench_ms(fn, warmup=10, iters=50):
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    times = []
+    for _ in range(iters):
+        start.record()
+        fn()
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+    times.sort()
+    return times[len(times) // 2]  # median
+
+
+def main() -> int:
+    name = torch.cuda.get_device_name(0)
+    if GPU_KEY.lower() not in name.lower():
+        print(f"this perf test is pinned to {{GPU_KEY!r}} but the current "
+              f"GPU is {{name!r}} - refusing to judge the goal")
+        return 2
+    results, all_met = [], True
+    for i, wl in enumerate(problem.WORKLOADS):
+        lat = problem.workload_latency(i, GPU_KEY)
+        if lat is None:
+            continue
+        baseline_ms, target_ms = lat
+        args = problem.build_workload_inputs(i)
+        with torch.no_grad():
+            ms = bench_ms(lambda: kernel_function(*args))
+        met = ms <= target_ms
+        all_met &= met
+        results.append(dict(workload=i, axes=wl.get("axes", {{}}), gpu=GPU_KEY,
+                            measured_ms=ms, baseline_ms=baseline_ms,
+                            target_ms=target_ms, target_met=met))
+        print(f"{{'ok  ' if met else 'MISS'}} workload[{{i}}] {{wl.get('axes', {{}})}}: "
+              f"{{ms:.4f}} ms (baseline {{baseline_ms}}, target {{target_ms}}, "
+              f"{{baseline_ms / ms:.2f}}x vs baseline)")
+        del args
+    print(json.dumps(dict(gpu=GPU_KEY, all_targets_met=all_met, results=results)))
+    print("PERF PASS" if all_met else "PERF MISS")
+    return 0 if all_met else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
 def materialize(md_path: Path, out_dir: Path):
     prob = parse_problem_md(md_path)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -558,7 +656,17 @@ def materialize(md_path: Path, out_dir: Path):
     )
     (out_dir / "problem.py").write_text(problem_py)
     (out_dir / "test.py").write_text(_TEST_TEMPLATE.format(md_name=md_path.name))
-    print(f"wrote {out_dir / 'problem.py'} and {out_dir / 'test.py'}")
+    wrote = [out_dir / 'problem.py', out_dir / 'test.py']
+    # one pinned perf gate per GPU spec, in a <gpu>/ subfolder
+    gpu_keys = sorted({k for w in prob["workloads"]
+                       for k in w.get("latency", {})})
+    for gk in gpu_keys:
+        gpu_dir = out_dir / gk
+        gpu_dir.mkdir(exist_ok=True)
+        (gpu_dir / "perf_test.py").write_text(
+            _PERF_TEST_TEMPLATE.format(md_name=md_path.name, gpu_key=gk))
+        wrote.append(gpu_dir / 'perf_test.py')
+    print("wrote " + ", ".join(str(w) for w in wrote))
 
 
 # --------------------------------------------------------------------------- #
