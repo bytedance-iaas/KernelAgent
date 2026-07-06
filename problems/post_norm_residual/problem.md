@@ -84,7 +84,7 @@ def run(sublayer_output: torch.Tensor, residual: torch.Tensor, weight: torch.Ten
 ## Workloads
 
 ```jsonl
-{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
+{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}, "latency": {"h200": {"baseline": 0.98, "target": 0.12}}}
 {"uuid": "371a388c-51f0-5416-a9eb-926337939aee", "axes": {"batch_size": 8, "seq_len": 2048}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
 {"uuid": "11183480-fb43-5c20-a887-7226134c5fc1", "axes": {"batch_size": 32, "seq_len": 256}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0034, "max_rtol": 0.05}}
 {"uuid": "ad827ab9-fb43-5e7f-8ab3-c5ca544ad5cb", "axes": {"batch_size": 8, "seq_len": 997}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.009800000000000001, "max_rtol": 0.05}}

@@ -25,8 +25,8 @@ import pytest
 import torch
 
 from flashinfer.gemm import group_gemm_fp8_nt_groupwise
-from pytorch.fp8_group_gemm import dequant_fp8, quant_fp8, fp8_group_gemm, Model
-from cutedsl.fp8_group_gemm import kernel_function as cutedsl_fp8_group_gemm
+from problem import dequant_fp8, quant_fp8, fp8_group_gemm, Model
+from b200.cutedsl.fp8_group_gemm import kernel_function as cutedsl_fp8_group_gemm
 
 BLOCK = 128
 FP8_DTYPE = torch.float8_e4m3fn
