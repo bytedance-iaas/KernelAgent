@@ -39,7 +39,7 @@ _REPO = _HERE.parents[2]
 
 _spec = importlib.util.spec_from_file_location(
     "fp8_fp4_group_gemm_masked",
-    _HERE / "pytorch" / "fp8_fp4_group_gemm_masked.py")
+    _HERE / "problem.py")
 problem = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(problem)
 

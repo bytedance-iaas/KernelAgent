@@ -57,6 +57,18 @@ each has a graceful fallback if absent):
   Individual paths may be given instead — copy them into this layout.
 - `EXTRA_TESTS` (optional): additional test files; `test.py` is the primary
   test, extras must also pass for a candidate to count as verified.
+- `<gpu>/perf_test.py` (optional, in a GPU-spec subfolder of `KERNEL_DIR`,
+  e.g. `b200/perf_test.py`): a **performance goal** gate — benchmarks
+  `kernel.kernel_function` (from `KERNEL_DIR`) against that spec's latency
+  targets and exits 0 iff every target is met, 2 when run on a different
+  GPU (emitted by ka-kernel-parser when the problem's workloads carry
+  `latency` entries; its last-but-one stdout line is a JSON report with
+  `measured_ms` / `baseline_ms` / `target_ms` per workload). Pick the
+  subfolder whose name matches the current GPU
+  (`nvidia-smi --query-gpu=name`); if none matches, there is no goal.
+  It is a GOAL, not a correctness gate: never use it to accept/reject
+  candidates for correctness, and a candidate that fails it is still
+  recorded normally.
 - `GPU_NAME` (optional): e.g. `"NVIDIA H100 NVL 94GB"` — auto-detected if omitted
 - `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 - `MAX_ROUNDS`: optimization rounds (default 5)
@@ -113,8 +125,14 @@ Each round, in order (this mirrors
 7. **Report the round** (see Round Reporting below).
 
 Additional stop conditions checked at the end of each round:
+- **Goal reached**: when a matching `<gpu>/perf_test.py` exists, run it
+  on each newly accepted best kernel; if it exits 0 (all latency targets
+  met), stop with success — the stated performance goal is achieved.
+  Report the measured vs target numbers.
 - **Plateau** (greedy): `MAX_NO_IMPROVEMENT` consecutive rounds without a new
-  best-runtime kernel.
+  best-runtime kernel. When a perf goal exists and is NOT yet met, prefer
+  continuing to the full round budget over an early plateau stop, and say
+  honestly in the final report that the goal was not reached.
 - **Convergence**: the last 5 rounds' efficiency varies by < 0.1%.
 - Round budget exhausted.
 
@@ -123,6 +141,8 @@ Additional stop conditions checked at the end of each round:
 After each round print a compact results block (the manager's per-round
 table):
 - time in ms, speedup vs PyTorch eager and vs the initial kernel
+- when a perf goal exists: measured vs `target_ms` per targeted workload
+  (from `perf_test.py`'s JSON line) and the remaining gap %
 - SOL: combined / compute / memory %
 - key NCU metrics when available: DRAM throughput %, DRAM BW (GB/s), warp
   active %, grid X, block X, blocks/SM, L1 hit %, L2 hit %, memory
@@ -153,6 +173,8 @@ Report the final result in the `run_optimization` contract, plus prose:
 ```
 
 - Speedups: best vs eager, vs torch.compile, vs initial kernel
+- When a perf goal exists: final `perf_test.py` verdict (targets met or
+  the honest remaining gap per workload)
 - Per-round summary table and final roofline state (remaining headroom)
 - Run directory path (kernels per round, NCU CSVs/JSONs, diagnoses,
   program_db.json, attempts.jsonl, reflexions)
