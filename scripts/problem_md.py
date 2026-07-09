@@ -445,15 +445,25 @@ def gpu_key():
 
 
 def workload_latency(workload_idx: int = 0, key: str = None):
-    """(baseline_ms, target_ms) for this workload on the given/current GPU,
-    or None when the workload carries no target for it."""
+    """Latency spec for this workload on the given/current GPU, or None
+    when the workload carries none for it. Returns a dict:
+      baseline  - ms of the recorded baseline implementation
+      target    - optional hard goal (ms): pass iff measured <= target
+      sol       - optional speed-of-light estimate (ms, e.g. from SOLAR);
+                  gated via the SOL-Score S = 1/(1+(t-sol)/(baseline-sol))
+                  (1.0 at SOL, 0.5 at baseline)
+      min_score - SOL-Score needed to pass when gating on `sol`
+                  (default 0.5 = match the baseline)"""
     key = key or gpu_key()
     if key is None:
         return None
     spec = WORKLOADS[workload_idx].get("latency", {{}}).get(key)
     if spec is None:
         return None
-    return float(spec["baseline"]), float(spec["target"])
+    return dict(baseline=float(spec["baseline"]),
+                target=float(spec["target"]) if "target" in spec else None,
+                sol=float(spec["sol"]) if "sol" in spec else None,
+                min_score=float(spec.get("min_score", 0.5)))
 
 
 # ---- reference implementation (verbatim from problem.md) ---- #
@@ -564,10 +574,14 @@ _PERF_TEST_TEMPLATE = '''"""Auto-generated from {md_name} by scripts/problem_md.
 Performance goal gate for GPU spec {gpu_key!r} (this file lives in the
 <problem>/{gpu_key}/ subfolder and is pinned to that spec). Benchmarks
 `kernel.kernel_function` from the PARENT problem directory on every
-workload carrying a {gpu_key!r} latency target (ms). Exit 0 iff every
-target is met; exit 2 when run on a different GPU. This is the goal
-gate for the ka-kernel-opt pipeline; it is NOT a correctness test -
-run test.py for accuracy.
+workload carrying a {gpu_key!r} latency spec (ms). Per workload the
+pass criterion is: measured <= `target` when the spec pins a hard
+target; otherwise SOL-Score >= `min_score` (default 0.5) when it pins
+`sol`, where S = 1/(1+(t-sol)/(baseline-sol)) is 1.0 at speed-of-light
+and 0.5 at the baseline; otherwise measured <= `baseline`. Exit 0 iff
+every workload passes; exit 2 when run on a different GPU. This is the
+goal gate for the ka-kernel-opt pipeline; it is NOT a correctness
+test - run test.py for accuracy.
 """
 
 import json
@@ -601,6 +615,14 @@ def bench_ms(fn, warmup=10, iters=50):
     return times[len(times) // 2]  # median
 
 
+def sol_score(t_k, t_b, t_sol):
+    """SOL-ExecBench anchored score: 1.0 at speed-of-light, 0.5 at baseline."""
+    denom = t_b - t_sol
+    if denom <= 0:
+        return 1.0 if t_k <= t_sol else 0.0
+    return 1.0 / (1.0 + (t_k - t_sol) / denom)
+
+
 def main() -> int:
     name = torch.cuda.get_device_name(0)
     if GPU_KEY.lower() not in name.lower():
@@ -612,18 +634,31 @@ def main() -> int:
         lat = problem.workload_latency(i, GPU_KEY)
         if lat is None:
             continue
-        baseline_ms, target_ms = lat
         args = problem.build_workload_inputs(i)
         with torch.no_grad():
             ms = bench_ms(lambda: kernel_function(*args))
-        met = ms <= target_ms
+        baseline_ms = lat["baseline"]
+        rec = dict(workload=i, axes=wl.get("axes", {{}}), gpu=GPU_KEY,
+                   measured_ms=ms, baseline_ms=baseline_ms)
+        detail = f"baseline {{baseline_ms}}, {{baseline_ms / ms:.2f}}x vs baseline"
+        if lat["target"] is not None:
+            met = ms <= lat["target"]
+            rec.update(target_ms=lat["target"])
+            detail += f", target {{lat['target']}}"
+        elif lat["sol"] is not None:
+            score = sol_score(ms, baseline_ms, lat["sol"])
+            met = score >= lat["min_score"]
+            rec.update(sol_ms=lat["sol"], sol_score=score,
+                       min_score=lat["min_score"])
+            detail += (f", sol {{lat['sol']}}, {{100.0 * lat['sol'] / ms:.1f}}% of SOL"
+                       f", score {{score:.3f}} (need >= {{lat['min_score']}})")
+        else:
+            met = ms <= baseline_ms
+        rec["target_met"] = met
         all_met &= met
-        results.append(dict(workload=i, axes=wl.get("axes", {{}}), gpu=GPU_KEY,
-                            measured_ms=ms, baseline_ms=baseline_ms,
-                            target_ms=target_ms, target_met=met))
+        results.append(rec)
         print(f"{{'ok  ' if met else 'MISS'}} workload[{{i}}] {{wl.get('axes', {{}})}}: "
-              f"{{ms:.4f}} ms (baseline {{baseline_ms}}, target {{target_ms}}, "
-              f"{{baseline_ms / ms:.2f}}x vs baseline)")
+              f"{{ms:.4f}} ms ({{detail}})")
         del args
     print(json.dumps(dict(gpu=GPU_KEY, all_targets_met=all_met, results=results)))
     print("PERF PASS" if all_met else "PERF MISS")

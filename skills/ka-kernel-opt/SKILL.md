@@ -33,7 +33,7 @@ pipeline, with Claude as the diagnosis/rewrite brain.
 each has a graceful fallback if absent):
 - **KernelWiki** — Hopper/Blackwell optimization techniques with real PR
   references (used by the rewrite step).
-- **cuda_skill** — general CUDA optimization/debugging/profiling practice
+- **cuda** — general CUDA optimization/debugging/profiling practice
   (used by the rewrite step).
 - **ncu-report-skill** — deep NCU analysis methodology: full-set reports,
   per-line stall attribution, B200 metric names (escalation path of the
@@ -60,10 +60,13 @@ each has a graceful fallback if absent):
 - `<gpu>/perf_test.py` (optional, in a GPU-spec subfolder of `KERNEL_DIR`,
   e.g. `b200/perf_test.py`): a **performance goal** gate — benchmarks
   `kernel.kernel_function` (from `KERNEL_DIR`) against that spec's latency
-  targets and exits 0 iff every target is met, 2 when run on a different
-  GPU (emitted by ka-kernel-parser when the problem's workloads carry
-  `latency` entries; its last-but-one stdout line is a JSON report with
-  `measured_ms` / `baseline_ms` / `target_ms` per workload). Pick the
+  goals and exits 0 iff every workload passes (hard `target` ms when
+  pinned, else SOL-Score >= `min_score` when the spec pins `sol`, see
+  `docs/PROBLEM_MD_FORMAT.md`), 2 when run on a different GPU (emitted
+  by ka-kernel-parser when the problem's workloads carry `latency`
+  entries; its last-but-one stdout line is a JSON report with
+  `measured_ms` / `baseline_ms` and `target_ms` or
+  `sol_ms`/`sol_score`/`min_score` per workload). Pick the
   subfolder whose name matches the current GPU
   (`nvidia-smi --query-gpu=name`); if none matches, there is no goal.
   It is a GOAL, not a correctness gate: never use it to accept/reject
