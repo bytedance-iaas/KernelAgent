@@ -106,22 +106,35 @@ schema. The FIRST line is the canonical workload (used by
 ### Performance targets (`latency`)
 
 A workload line may carry an optional `latency` object: per-GPU
-`{"<gpu_key>": {"baseline": <ms>, "target": <ms>}}` entries (units:
-milliseconds). `gpu_key` is a case-insensitive substring of
+`{"<gpu_key>": {"baseline": <ms>, ...}}` entries (units: milliseconds).
+`gpu_key` is a case-insensitive substring of
 `torch.cuda.get_device_name()` — e.g. `"h200"`, `"b200"`, `"h100"`.
-`baseline` is what an unoptimized reference achieves; `target` is the
-optimization goal.
+`baseline` is required — what the recorded baseline implementation
+achieves. The goal is expressed by one of two optional keys:
+
+- `target` (ms): a hard goal — the workload passes iff
+  `measured <= target`.
+- `sol` (ms): the speed-of-light estimate (e.g. SOLAR's analytic
+  roofline, as in SOL-ExecBench). SOL is unreachable by definition, so
+  the workload is graded with the SOL-ExecBench anchored score
+  `S = 1 / (1 + (t - sol) / (baseline - sol))` — 1.0 at speed-of-light,
+  0.5 at the baseline — and passes iff `S >= min_score` (optional key,
+  default `0.5`, i.e. match or beat the baseline).
+
+`target` wins when both are present; with neither, the gate falls back
+to `measured <= baseline`.
 
 When workloads carry `latency`, `materialize` additionally emits one
 pinned gate per GPU spec in a subfolder: `<problem>/<gpu_key>/
 perf_test.py` (e.g. `fp8_group_gemm/b200/perf_test.py`). Each gate
 imports `problem`/`kernel` from the parent problem directory,
 benchmarks `kernel.kernel_function` (median of CUDA-event timings) on
-every workload with a target for that spec, prints a per-workload table
-plus one machine-readable JSON line, and exits 0 iff every target is
-met — or 2 when run on a different GPU (pinned, never vacuous).
+every workload with a latency spec for that GPU, prints a per-workload
+table (speedup vs baseline, and %-of-SOL + score when `sol` is set)
+plus one machine-readable JSON line, and exits 0 iff every workload
+passes — or 2 when run on a different GPU (pinned, never vacuous).
 `problem.py` exposes the same data via `gpu_key()` and
-`workload_latency(i)`.
+`workload_latency(i)` (a dict: `baseline`/`target`/`sol`/`min_score`).
 
 The perf gates are GOAL gates, not correctness gates: the
 `ka-kernel-opt` pipeline picks the subfolder matching the current GPU,

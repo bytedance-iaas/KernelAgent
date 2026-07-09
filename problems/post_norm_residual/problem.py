@@ -67,7 +67,7 @@ INPUT_SPECS = json.loads(r"""{
     }
 }""")
 WORKLOADS = [json.loads(line) for line in r"""
-{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}, "latency": {"h200": {"baseline": 0.98, "target": 0.12}}}
+{"uuid": "0e60aff3-9424-553b-99ac-4e1657d5cc6b", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}, "latency": {"h200": {"baseline": 0.98, "sol": 0.12}}}
 {"uuid": "371a388c-51f0-5416-a9eb-926337939aee", "axes": {"batch_size": 8, "seq_len": 2048}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
 {"uuid": "11183480-fb43-5c20-a887-7226134c5fc1", "axes": {"batch_size": 32, "seq_len": 256}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0034, "max_rtol": 0.05}}
 {"uuid": "ad827ab9-fb43-5e7f-8ab3-c5ca544ad5cb", "axes": {"batch_size": 8, "seq_len": 997}, "inputs": {"sublayer_output": {"type": "random"}, "residual": {"type": "random"}, "weight": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.009800000000000001, "max_rtol": 0.05}}
@@ -260,15 +260,25 @@ def gpu_key():
 
 
 def workload_latency(workload_idx: int = 0, key: str = None):
-    """(baseline_ms, target_ms) for this workload on the given/current GPU,
-    or None when the workload carries no target for it."""
+    """Latency spec for this workload on the given/current GPU, or None
+    when the workload carries none for it. Returns a dict:
+      baseline  - ms of the recorded baseline implementation
+      target    - optional hard goal (ms): pass iff measured <= target
+      sol       - optional speed-of-light estimate (ms, e.g. from SOLAR);
+                  gated via the SOL-Score S = 1/(1+(t-sol)/(baseline-sol))
+                  (1.0 at SOL, 0.5 at baseline)
+      min_score - SOL-Score needed to pass when gating on `sol`
+                  (default 0.5 = match the baseline)"""
     key = key or gpu_key()
     if key is None:
         return None
     spec = WORKLOADS[workload_idx].get("latency", {}).get(key)
     if spec is None:
         return None
-    return float(spec["baseline"]), float(spec["target"])
+    return dict(baseline=float(spec["baseline"]),
+                target=float(spec["target"]) if "target" in spec else None,
+                sol=float(spec["sol"]) if "sol" in spec else None,
+                min_score=float(spec.get("min_score", 0.5)))
 
 
 # ---- reference implementation (verbatim from problem.md) ---- #
