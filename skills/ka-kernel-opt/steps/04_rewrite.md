@@ -28,7 +28,7 @@ flow for the technique the diagnosis points at. Check
 `gpu_specs.architecture` first: Hopper/Blackwell techniques don't apply to
 Ampere/Ada.
 
-**2. cuda_skill** (`.claude/skills/cuda_skill/`) — general CUDA kernel
+**2. cuda** (`.claude/skills/cuda/`) — general CUDA kernel
 optimization and development practice (memory coalescing, occupancy tuning,
 shared-memory patterns, PTX-level inspection). Use for platform-generic
 fixes and whenever the diagnosis is about classic access-pattern or
