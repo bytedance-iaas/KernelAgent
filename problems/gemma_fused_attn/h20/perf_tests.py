@@ -109,8 +109,8 @@ def main():
     if _HAVE_REF_TESTS:
         try:
             ref, cfg = ref_tests.build_reference_layer(dev, dt)
-            rx, position_ids, pos_emb, attn = ref_tests.make_inputs(dev, dt)
-            ref_fn = lambda: ref_tests.ref_forward(ref, rx, position_ids, pos_emb, attn)
+            rx, position_ids, pos_emb, attn, cond = ref_tests.make_inputs(dev, dt)
+            ref_fn = lambda: ref_tests.ref_forward(ref, rx, position_ids, pos_emb, attn, cond)
         except Exception as e:
             print(f"[note] transformers reference unavailable "
                   f"({type(e).__name__}: {e}); using pure-torch problem.Model as reference.")
@@ -204,6 +204,99 @@ def main():
     print(f"3x goal ({ref_ms / TARGET_SPEEDUP:.2f} ms): "
           f"{'MET' if met else 'NOT MET'} "
           f"{'' if met else '(infeasible in bf16; needs FP8)'}")
+    print("-" * 72)
+
+    # ---- forward + backward (training step) ----
+    # The prefix path uses the fast grad-only backward (h20/layer_train.py):
+    # a Triton forward that SAVES activations + direct gradient computation
+    # (transposed-GEMM grads on cuBLAS, local grads for norm/attn/gelu) with no
+    # forward recompute. Backward is GEMM-FLOP-bound and cuBLAS already runs
+    # those at roofline, so the training-step ceiling is modest (~1.05-1.15x);
+    # the point is removing the recompute regression (was ~0.79x).
+    print("forward + backward (training step, eager; fast grad-only backward):")
+    try:
+        import ref_tests as _rt
+        meta = (nh, nkv, hd)
+
+        # eager reference fwd+bwd (pure-torch problem.Model, validated equivalent)
+        xr2 = xin.clone().requires_grad_(True)
+
+        def ref_fb():
+            xr2.grad = None
+            model.zero_grad(set_to_none=True)
+            model(xr2).float().sum().backward()
+
+        ref_fb_ms = bench(ref_fb)
+
+        # fused module fwd+bwd (Triton forward + recompute backward)
+        xg = xin.clone().requires_grad_(True)
+        Wg = [w.detach().clone().requires_grad_(True) for w in W]
+
+        def fused_fb():
+            xg.grad = None
+            for w in Wg:
+                w.grad = None
+            y = _rt._FusedFn.apply(xg, Wg[0], Wg[1], Wg[2], Wg[3], Wg[4], Wg[5],
+                                   Wg[6], Wg[7], Wg[8], None, None, None, None,
+                                   None, None, None, eps, meta)
+            y.float().sum().backward()
+
+        fused_fb_ms = bench(fused_fb)
+
+        # 3x forward FLOPs is the usual fwd+bwd estimate; the recompute backward
+        # does extra work, so this MFU is a lower bound, printed for context.
+        print(f"  {'-- full attention (no mask) --':<46}")
+        print(f"  {'reference (problem.Model, eager)':<46} {ref_fb_ms:8.4f} ms  {'1.00x':>8}")
+        print(f"  {'fused (FlashAttention bwd + fusions)':<46} {fused_fb_ms:8.4f} ms  "
+              f"{ref_fb_ms / fused_fb_ms:7.3f}x")
+
+        # ---- masked variant (the real workload has an additive mask) ----
+        # openpi's mask (eager_attention_forward L244-246) is a general additive
+        # [B,1,S,S] bias; FlashAttention can't take it, so the masked fast path
+        # uses a materialised torch attention (saving p for the backward) plus
+        # the same GEMM/norm/MLP fusions. Build a block-diagonal (prefix-LM) mask.
+        Bx, Sx = xin.shape[0], xin.shape[1]
+        _att = torch.zeros(Bx, Sx, dtype=torch.long, device=dev)
+        _att[:, Sx // 2:] = 1
+        _cs = torch.cumsum(_att, 1)
+        _a2 = _cs[:, None, :] <= _cs[:, :, None]
+        maskt = torch.where(_a2[:, None], 0.0, -2.3819763e38).to(dt)
+        posid = torch.arange(Sx, device=dev).unsqueeze(0).expand(Bx, -1).contiguous()
+
+        xrm = xin.clone().requires_grad_(True)
+        Wrm = [w.detach().clone().requires_grad_(True) for w in W]
+
+        def ref_fb_m():
+            xrm.grad = None
+            for w in Wrm:
+                w.grad = None
+            _rt._torch_layer(xrm, *Wrm, None, None, None, None, None, maskt, posid,
+                             eps, meta).float().sum().backward()
+
+        ref_fb_m_ms = bench(ref_fb_m)
+
+        xgm = xin.clone().requires_grad_(True)
+        Wgm = [w.detach().clone().requires_grad_(True) for w in W]
+
+        def fused_fb_m():
+            xgm.grad = None
+            for w in Wgm:
+                w.grad = None
+            _rt._FusedFn.apply(xgm, Wgm[0], Wgm[1], Wgm[2], Wgm[3], Wgm[4], Wgm[5],
+                               Wgm[6], Wgm[7], Wgm[8], None, None, None, None,
+                               None, maskt, posid, eps, meta).float().sum().backward()
+
+        fused_fb_m_ms = bench(fused_fb_m)
+
+        print(f"  {'-- block-diagonal additive mask --':<46}")
+        print(f"  {'reference (torch layer, masked)':<46} {ref_fb_m_ms:8.4f} ms  {'1.00x':>8}")
+        print(f"  {'fused (masked: materialised attn + fusions)':<46} {fused_fb_m_ms:8.4f} ms  "
+              f"{ref_fb_m_ms / fused_fb_m_ms:7.3f}x")
+        print(f"  -> no-mask {ref_fb_ms / fused_fb_ms:.2f}x, masked {ref_fb_m_ms / fused_fb_m_ms:.2f}x "
+              f"vs eager. FlashAttn can't take the additive mask, so the masked path "
+              f"materialises attention (still removes the recompute regression).")
+    except Exception as e:  # pragma: no cover
+        print(f"  [skip] fwd+bwd benchmark unavailable ({type(e).__name__}: {e})")
     print("-" * 72)
 
     ok = graph_ok and (sp_graph > 1.0)
