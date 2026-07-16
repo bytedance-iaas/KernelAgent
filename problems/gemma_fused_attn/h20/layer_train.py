@@ -240,7 +240,7 @@ def _rotary_pos(position_ids, D, dtype):
 
 
 def prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, eps, meta,
-                         attention_mask=None, position_ids=None):
+                         attention_mask=None, position_ids=None, use_cache=False):
     """Fast forward that also returns the activations needed for backward.
 
     attention_mask: optional additive [B,1,S,S] bias (openpi's general mask,
@@ -250,6 +250,11 @@ def prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, eps, meta,
     once you count pack/unpack. When None, the fast FlashAttention path is used.
     position_ids: optional [B,S] RoPE positions (padded prefix = cumsum(pad)-1);
     defaults to arange.
+    use_cache: also surface this layer's rope'd K and pre-attention V as
+    `ctx["kv_cache"] = (k, v)`, each [B, n_kv, S, hd] — the HF `Cache.update`
+    layout — so a prefix-cache build can collect per-layer K/V. The tensors are
+    the ones attention already consumed, so this only costs the transpose/copy
+    into HF layout (n_kv is 1 here, so a few hundred KB).
     """
     n_heads, n_kv, hd = meta
     B, S, H = x.shape
@@ -302,6 +307,16 @@ def prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, eps, meta,
         ao = out_fa.reshape(M, n_heads * hd)
         p = None
 
+    # HF past_key_values wants [B, n_kv, S, hd]: the masked path already holds
+    # kr/vv that way, the FlashAttn path keeps them [B, S, n_kv, hd]. Export the
+    # *rope'd* k (kr) and the pre-GQA-expansion v (vv) — not kx/vx, whose heads
+    # are repeat_interleave'd up to n_heads and which a cache must not store.
+    if use_cache:
+        kc, vc = (kr, vv) if masked else (kr.transpose(1, 2), vv.transpose(1, 2))
+        kv_cache = (kc.contiguous(), vc.contiguous())
+    else:
+        kv_cache = None
+
     o = _matmul(ao, wo)                              # triton [M,H]
     h1 = xr + o
     hn = _rmsnorm(h1, w_pln, eps)                    # triton [M,H]
@@ -312,12 +327,18 @@ def prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, eps, meta,
     ctx = dict(x=x, h=h, ao=ao, h1=h1, hn=hn, gl=gl, g=g, u=u, prod=prod,
                cos=cos, sin=sin, has_pos=has_pos, masked=masked, mask=attention_mask,
                qr=qr, kr=kr, vv=vv, p=p, out_fa=out_fa, lse=lse, rng=rng,
+               kv_cache=kv_cache,
                w_ln=w_ln, wq=wq, wk=wk, wv=wv, wo=wo, w_pln=w_pln,
                wg=wg, wu=wu, wd=wd, eps=eps, meta=meta, shape=(B, S, H))
     return out.view(B, S, H), ctx
 
 
-def prefix_train_backward(ctx, dout):
+def prefix_train_backward(ctx, dout, dk_cache=None, dv_cache=None):
+    """Grad-only backward. dk_cache/dv_cache are the incoming grads of the
+    `use_cache` K/V outputs ([B, n_kv, S, hd]); they fold into this layer's own
+    dk/dv, so a suffix that attends to the cached prefix K/V still trains the
+    prefix correctly. Both None (the plain training step) is the fast path.
+    """
     n_heads, n_kv, hd = ctx["meta"]
     B, S, H = ctx["shape"]
     M = B * S
@@ -369,6 +390,12 @@ def prefix_train_backward(ctx, dout):
             dvh = dvx.view(B, n_kv, groups, S, hd).sum(2)
         else:
             dkr, dvh = dkx, dvx
+        # kr/vv were also exported as the K/V cache; fold their incoming grads in
+        # (already [B,n_kv,S,hd] on this path).
+        if dk_cache is not None:
+            dkr = dkr + dk_cache
+        if dv_cache is not None:
+            dvh = dvh + dv_cache
         # RoPE backward, [B,H,S,hd] layout
         cse = cos.view(B, 1, S, hd) if has_pos else cos.view(1, 1, S, hd)
         sne = sin.view(B, 1, S, hd) if has_pos else sin.view(1, 1, S, hd)
@@ -385,6 +412,11 @@ def prefix_train_backward(ctx, dout):
         dvv = torch.empty_like(vv)
         _fa_bwd(dao_bshd, qr, kr, vv, out_fa, lse, dqr, dkr, dvv,
                 0.0, scale, False, -1, -1, 0.0, None, False, rng_state=rng)
+        # Cache grads arrive [B,n_kv,S,hd]; this path works in [B,S,n_kv,hd].
+        if dk_cache is not None:
+            dkr = dkr + dk_cache.transpose(1, 2)
+        if dv_cache is not None:
+            dvv = dvv + dv_cache.transpose(1, 2)
         # RoPE backward, [B,S,H,hd] layout
         cse = cos.view(B, S, 1, hd) if has_pos else cos.view(1, S, 1, hd)
         sne = sin.view(B, S, 1, hd) if has_pos else sin.view(1, S, 1, hd)
@@ -406,20 +438,35 @@ def prefix_train_backward(ctx, dout):
 
 
 class PrefixTrainFn(torch.autograd.Function):
-    """Fast fwd + grad-only backward for the standard (prefix) Gemma layer."""
+    """Fast fwd + grad-only backward for the standard (prefix) Gemma layer.
+
+    With `use_cache=True` the call returns `(hidden_states, k, v)` instead of a
+    bare `hidden_states`; k/v are this layer's rope'd K and its V, each
+    [B, n_kv, S, hd] — the layout `Cache.update(k, v, layer_idx)` expects — so a
+    prefix-cache build can collect per-layer K/V and a suffix can attend to them
+    without recomputing the prefix. k/v are differentiable: their grads fold back
+    into this layer's dk/dv (see prefix_train_backward). Default `use_cache=False`
+    keeps the single-output signature the training step already uses.
+    """
 
     @staticmethod
     def forward(ctx, x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, eps, meta,
-                attention_mask=None, position_ids=None):
+                attention_mask=None, position_ids=None, use_cache=False):
         out, saved = prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln,
                                           wg, wu, wd, eps, meta,
                                           attention_mask=attention_mask,
-                                          position_ids=position_ids)
+                                          position_ids=position_ids,
+                                          use_cache=use_cache)
         ctx.saved = saved
+        if use_cache:
+            k, v = saved["kv_cache"]
+            return out, k, v
         return out
 
     @staticmethod
-    def backward(ctx, grad_out):
-        g = prefix_train_backward(ctx.saved, grad_out.contiguous())
-        # grads for (x, w_ln, wq..wd, eps, meta, attention_mask, position_ids)
-        return (*g, None, None, None, None)
+    def backward(ctx, grad_out, grad_k=None, grad_v=None):
+        g = prefix_train_backward(ctx.saved, grad_out.contiguous(),
+                                  dk_cache=grad_k, dv_cache=grad_v)
+        # grads for (x, w_ln, wq..wd, eps, meta, attention_mask, position_ids,
+        #            use_cache)
+        return (*g, None, None, None, None, None)
