@@ -244,11 +244,19 @@ class _FusedFn(torch.autograd.Function):
     recompute), which turns the whole-layer training step from ~0.79x into a
     slight win vs eager. Every other path (adaRMS / arbitrary mask / explicit
     positions) uses the exact PyTorch recompute backward.
+
+    `use_cache=True` returns `(out, k, v)` instead of a bare `out`, surfacing
+    this layer's rope'd K / pre-GQA-expansion V as [B, n_kv, S, hd] so a
+    prefix-cache build can collect them. Prefix path only: the cache is built by
+    the gemma_2b VLM prefix, and the adaRMS action expert consumes it rather than
+    producing it — kernel_function never surfaces its K/V, hence the explicit
+    error instead of a silently empty cache.
     """
 
     @staticmethod
     def forward(ctx, x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd,
-                di_w, di_b, dp_w, dp_b, cond, mask, position_ids, eps, meta):
+                di_w, di_b, dp_w, dp_b, cond, mask, position_ids, eps, meta,
+                use_cache=False):
         # Fast path for the standard (non-adaRMS) layer — masked or not. The
         # masked prefix uses the Triton masked-attn fwd + torch-manual masked
         # bwd (FlashAttn can't take an arbitrary additive mask); the unmasked
@@ -260,9 +268,19 @@ class _FusedFn(torch.autograd.Function):
             out, saved = prefix_train_forward(x, w_ln, wq, wk, wv, wo, w_pln,
                                               wg, wu, wd, eps, meta,
                                               attention_mask=mask,
-                                              position_ids=position_ids)
+                                              position_ids=position_ids,
+                                              use_cache=use_cache)
             ctx.train_ctx = saved
+            if use_cache:
+                k, v = saved["kv_cache"]
+                return out, k, v
             return out
+
+        if use_cache:
+            raise NotImplementedError(
+                "use_cache is only supported on the prefix (non-adaRMS) path; "
+                "the adaRMS action-expert layer consumes a prefix cache rather "
+                "than producing one.")
 
         args = [x, w_ln, wq, wk, wv, wo, w_pln, wg, wu, wd, di_w, di_b, dp_w, dp_b, cond]
         ctx.none_mask = [a is None for a in args]
@@ -280,14 +298,19 @@ class _FusedFn(torch.autograd.Function):
         )
 
     @staticmethod
-    def backward(ctx, grad_out):
+    def backward(ctx, grad_out, grad_k=None, grad_v=None):
         if ctx.fast:
             from layer_train import prefix_train_backward
-            g = prefix_train_backward(ctx.train_ctx, grad_out.contiguous())
-            # g = (dx, dw_ln, dWq..dWd); pad di_b/dp_w/dp_b/cond/mask/pos/eps/meta
+            # grad_k/grad_v are the incoming grads of the use_cache K/V outputs
+            # (None unless use_cache); they fold into this layer's own dk/dv, so
+            # a suffix attending the cached prefix still trains the prefix.
+            g = prefix_train_backward(ctx.train_ctx, grad_out.contiguous(),
+                                      dk_cache=grad_k, dv_cache=grad_v)
+            # g = (dx, dw_ln, dWq..dWd); pad di_w/di_b/dp_w/dp_b/cond/mask/pos/
+            # eps/meta/use_cache
             dx, dw_ln, dWq, dWk, dWv, dWo, dw_pln, dWg, dWu, dWd = g
             return (dx, dw_ln, dWq, dWk, dWv, dWo, dw_pln, dWg, dWu, dWd,
-                    None, None, None, None, None, None, None, None, None)
+                    None, None, None, None, None, None, None, None, None, None)
 
         saved = list(ctx.saved_tensors)
         args = [None if is_none else saved.pop(0) for is_none in ctx.none_mask]
@@ -301,16 +324,21 @@ class _FusedFn(torch.autograd.Function):
         grads = torch.autograd.grad(y, needs, grad_out, allow_unused=True)
         gi = iter(grads)
         out = [next(gi) if (isinstance(d, torch.Tensor) and d.requires_grad) else None for d in diff]
-        return (*out, None, None, None, None)  # mask, position_ids, eps, meta
+        # mask, position_ids, eps, meta, use_cache
+        return (*out, None, None, None, None, None)
 
 
-def build_fused_layer(ref, cfg, device, dtype):
+def build_fused_layer(ref, cfg, device, dtype, layer_idx=0):
     """Fused Gemma decoder layer backed by the Triton kernel in h20/kernel.py.
 
     Detects the adaRMS variant from `cfg` and mirrors GemmaDecoderLayer's
     parameter names (self_attn.q_proj.weight, mlp.gate_proj.weight,
     input_layernorm.{weight | dense.weight/dense.bias}, ...) so the per-parameter
     grad comparison in main() engages for every parameter.
+
+    `layer_idx` is the slot this layer occupies in `language_model.layers`; it is
+    the index the K/V are written to when a `past_key_value` Cache is passed to
+    forward().
     """
     _load_kernel()  # ensure importable / compiled
     H = cfg.hidden_size
@@ -355,9 +383,21 @@ def build_fused_layer(ref, cfg, device, dtype):
             self.self_attn = _Attn()
             self.mlp = _MLP()
             self.eps = float(cfg.rms_norm_eps)
+            self.layer_idx = layer_idx
 
         def forward(self, x, position_ids=None, position_embeddings=None,
-                    attention_mask=None, adarms_cond=None, **kwargs):
+                    attention_mask=None, adarms_cond=None,
+                    past_key_value=None, use_cache=False, cache_kwargs=None,
+                    **kwargs):
+            """Returns `hidden_states`, except when `use_cache=True` is given
+            *without* a `past_key_value`, which returns `(hidden_states, k, v)`.
+
+            Passing a `past_key_value` Cache follows the HF convention: this
+            layer's K/V are written into it at `self.layer_idx` in place and a
+            bare `hidden_states` comes back — which is what lets a prefix-cache
+            build collect per-layer K/V by calling the stack and then reading the
+            Cache. Without either argument the signature is unchanged.
+            """
             a = self.self_attn
             m = self.mlp
             if adarms:
@@ -368,12 +408,20 @@ def build_fused_layer(ref, cfg, device, dtype):
                 w_ln = self.input_layernorm.weight
                 w_pln = self.post_attention_layernorm.weight
                 di_w = di_b = dp_w = dp_b = None
-            return _FusedFn.apply(
+            want_kv = use_cache or past_key_value is not None
+            res = _FusedFn.apply(
                 x, w_ln, a.q_proj.weight, a.k_proj.weight, a.v_proj.weight, a.o_proj.weight,
                 w_pln, m.gate_proj.weight, m.up_proj.weight, m.down_proj.weight,
                 di_w, di_b, dp_w, dp_b, adarms_cond, attention_mask, position_ids,
-                self.eps, meta,
+                self.eps, meta, want_kv,
             )
+            if not want_kv:
+                return res
+            out, k, v = res
+            if past_key_value is None:
+                return out, k, v
+            past_key_value.update(k, v, self.layer_idx, cache_kwargs)
+            return out
 
     fused = FusedGemmaLayer().to(device).to(dtype)
     with torch.no_grad():
