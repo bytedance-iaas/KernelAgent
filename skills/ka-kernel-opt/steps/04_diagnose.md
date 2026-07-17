@@ -11,8 +11,10 @@ produce a structured diagnosis. Replaces the LLM call in
 
 ## Inputs
 - `$RUN_DIR/ncu_round_$ROUND.json` (target kernel metrics, dynamic)
-- `$RUN_DIR/ptx_round_$ROUND.json` (step 03: compiler-side static analysis —
-  may be partial/absent; then diagnose on NCU data alone and say so)
+- `$RUN_DIR/static_round_$ROUND.json` (step 03: static analysis, PTX +
+  SASS — always present; the step is never skipped. Individual fields may
+  be marked degraded when a toolchain binary was unavailable — the round
+  report must already have said which and why)
 - `$RUN_DIR/roofline_round_$ROUND.json` (roofline + grid analysis + config)
 - `$RUN_DIR/gpu_specs.json`
 - The current kernel code
@@ -63,7 +65,8 @@ tens of sequential waves) usually IS the root cause.
 **Stall Metrics** — short/long scoreboard stalls (long scoreboard = waiting on
 global memory), barrier stalls, branch-resolving stalls.
 
-**Static PTX/SASS cross-check** — read `ptx_round_$ROUND.json` next to the
+**Static-analysis cross-check (PTX + SASS)** — read
+`static_round_$ROUND.json` next to the
 NCU numbers; a diagnosis is stronger when a dynamic symptom has a static
 cause (and suspicious when the two disagree):
 - `flags[]` are pre-computed hypotheses (spills, launch-bounds register

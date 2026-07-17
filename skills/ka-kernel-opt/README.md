@@ -19,13 +19,13 @@ ka-kernel-opt/
 ├── steps/
 │   ├── 01_baseline.md          # Verify kernel + benchmark eager/compile/initial
 │   ├── 02_profile.md           # NCU profiling + roofline/grid analysis
-│   ├── 03_ptx.md               # Static PTX/SASS analysis (spills, widths, flags)
-│   ├── 04_diagnose.md          # Bottleneck diagnosis (NCU + PTX evidence)
+│   ├── 03_static_analysis.md   # Static analysis: PTX + SASS (spills, widths, flags; mandatory)
+│   ├── 04_diagnose.md          # Bottleneck diagnosis (NCU + static-analysis evidence)
 │   ├── 05_rewrite.md           # Optimization rewrite w/ pattern library
 │   └── 06_verify_accept.md     # Correctness, benchmark, accept/reject, reflexion
 ├── tools/                      # Deterministic scripts (no LLM, no repo deps)
 │   ├── profile_ncu.py          # Run Nsight Compute, parse CSV → metrics JSON
-│   ├── analyze_ptx.py          # Dump JIT PTX/cubin, ptxas/cuobjdump static analysis
+│   ├── analyze_ptx.py          # Static-analysis tool: dump JIT PTX/cubin, ptxas (PTX) + cuobjdump (SASS)
 │   ├── roofline.py             # SOL classification + grid analysis + config extraction
 │   ├── benchmark.py            # Time kernel / PyTorch eager / torch.compile
 │   ├── gpu_specs.py            # GPU spec database lookup / auto-detect
