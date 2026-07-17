@@ -48,7 +48,7 @@ each has a graceful fallback if absent):
 |---|---|
 | a kernel directory (or kernel+problem+test paths) | **optimize** — full loop |
 | `profile <dir>` or the user only wants metrics/roofline | **profile** — steps 01–02 once, report |
-| `diagnose <dir>` or the user wants analysis without changes | **diagnose** — steps 01–03 once, report |
+| `diagnose <dir>` or the user wants analysis without changes | **diagnose** — steps 01–04 once, report |
 
 ## Inputs
 - `KERNEL_DIR`: directory with `input.py` (initial kernel), `problem.py`
@@ -117,15 +117,20 @@ Each round, in order (this mirrors
    one-time **Baseline Profiling** section comparing eager vs initial kernel.
 3. **Stop check** — if `roofline.at_roofline` (efficiency ≥ 95%), stop with
    success: the kernel is at the hardware limit.
-4. **Diagnose** — `${CLAUDE_SKILL_DIR}/steps/03_diagnose.md`
-   (you classify the bottleneck and root causes, grounded in metrics).
-5. **Rewrite** — `${CLAUDE_SKILL_DIR}/steps/04_rewrite.md`
+4. **PTX/SASS analysis** — `${CLAUDE_SKILL_DIR}/steps/03_ptx.md`
+   (static compiler-side view: spills, launch-bounds register budgets,
+   access widths, instruction-mix flags). Best-effort: on failure the
+   round proceeds with NCU data alone.
+5. **Diagnose** — `${CLAUDE_SKILL_DIR}/steps/04_diagnose.md`
+   (you classify the bottleneck and root causes, grounded in BOTH the NCU
+   metrics and the PTX/SASS analysis — never a single tool).
+6. **Rewrite** — `${CLAUDE_SKILL_DIR}/steps/05_rewrite.md`
    (consult `reference/` patterns; produce `kernel_candidate.py`).
-6. **Verify + Accept/Reject + Reflect** —
-   `${CLAUDE_SKILL_DIR}/steps/05_verify_accept.md`
+7. **Verify + Accept/Reject + Reflect** —
+   `${CLAUDE_SKILL_DIR}/steps/06_verify_accept.md`
    (correctness with ≤3 refinements, benchmark, program-database update with
    lineage, two-track best tracking, divergence revert, reflexion).
-7. **Report the round** (see Round Reporting below).
+8. **Report the round** (see Round Reporting below).
 
 Additional stop conditions checked at the end of each round:
 - **Goal reached**: when a matching `<gpu>/perf_test.py` exists, run it
@@ -150,6 +155,8 @@ table):
 - key NCU metrics when available: DRAM throughput %, DRAM BW (GB/s), warp
   active %, grid X, block X, blocks/SM, L1 hit %, L2 hit %, memory
   coalescing %, long-scoreboard stalls %
+- PTX/SASS flags when available: registers/spills and the high-severity
+  `flags` from `ptx_round_$ROUND.json` (one line each)
 - a compact code diff (± lines only, max 20) of parent → candidate:
   `diff -u parent.py candidate.py | grep -E '^[+-][^+-]' | head -20`
 - for failed candidates: the one-line failure reason
@@ -192,9 +199,10 @@ Report the final result in the `run_optimization` contract, plus prose:
   next round's parents are again the global top-2. No plateau early-stop —
   runs the full round budget. Costs ~4× per round vs greedy — use when the
   user asks for a thorough search.
-- **Profile / diagnose modes**: run steps 01–02 (and 03 for diagnose) once on
-  the given kernel and present the metrics, roofline verdict, grid
-  assessment, and (diagnose) root causes + recommended fixes — no rewrites.
+- **Profile / diagnose modes**: run steps 01–02 (and 03–04 for diagnose) once
+  on the given kernel and present the metrics, roofline verdict, grid
+  assessment, and (diagnose) the PTX/SASS flags, root causes + recommended
+  fixes — no rewrites.
 
 ## Ground Rules
 - NCU requires exclusive GPU access: never profile and benchmark at the same

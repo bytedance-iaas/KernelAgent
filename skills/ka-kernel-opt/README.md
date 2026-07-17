@@ -19,11 +19,13 @@ ka-kernel-opt/
 ├── steps/
 │   ├── 01_baseline.md          # Verify kernel + benchmark eager/compile/initial
 │   ├── 02_profile.md           # NCU profiling + roofline/grid analysis
-│   ├── 03_diagnose.md          # Bottleneck diagnosis (Claude as GPU perf expert)
-│   ├── 04_rewrite.md           # Optimization rewrite w/ pattern library
-│   └── 05_verify_accept.md     # Correctness, benchmark, accept/reject, reflexion
+│   ├── 03_ptx.md               # Static PTX/SASS analysis (spills, widths, flags)
+│   ├── 04_diagnose.md          # Bottleneck diagnosis (NCU + PTX evidence)
+│   ├── 05_rewrite.md           # Optimization rewrite w/ pattern library
+│   └── 06_verify_accept.md     # Correctness, benchmark, accept/reject, reflexion
 ├── tools/                      # Deterministic scripts (no LLM, no repo deps)
 │   ├── profile_ncu.py          # Run Nsight Compute, parse CSV → metrics JSON
+│   ├── analyze_ptx.py          # Dump JIT PTX/cubin, ptxas/cuobjdump static analysis
 │   ├── roofline.py             # SOL classification + grid analysis + config extraction
 │   ├── benchmark.py            # Time kernel / PyTorch eager / torch.compile
 │   ├── gpu_specs.py            # GPU spec database lookup / auto-detect
@@ -105,10 +107,10 @@ python skills/ka-kernel-opt/tools/roofline.py --metrics artifacts/ncu_metrics.js
 | `Benchmark` / `timing.py` / `kernel_subprocess.py` | `tools/benchmark.py` |
 | `gpu_specs_database` / `get_gpu_specs` | `tools/gpu_specs.py` |
 | `JSONProgramDatabase` / `ProgramEntry` (lineage, top-k) | `tools/program_db.py` |
-| `BottleneckAnalyzer` + `BOTTLENECK_PROMPT` (judger_prompt) | `steps/03_diagnose.md` (Claude) |
-| `kernel_optimization.j2` rewrite call | `steps/04_rewrite.md` (Claude) |
-| `verify_with_refinement` + `_update_kernels` accept/reject | `steps/05_verify_accept.md` |
-| `reflexion_prompt.j2` | `steps/05_verify_accept.md` (Claude) |
+| `BottleneckAnalyzer` + `BOTTLENECK_PROMPT` (judger_prompt) | `steps/04_diagnose.md` (Claude, NCU + PTX evidence) |
+| `kernel_optimization.j2` rewrite call | `steps/05_rewrite.md` (Claude) |
+| `verify_with_refinement` + `_update_kernels` accept/reject | `steps/06_verify_accept.md` |
+| `reflexion_prompt.j2` | `steps/06_verify_accept.md` (Claude) |
 | `RAGPrescriber` + `kernel_opt/database` corpus | KernelWiki + cuda_skill + `reference/cuda/` repos |
 | `GreedyStrategy` / `BeamSearchStrategy` (select/update/terminate) | `SKILL.md` round step 1 + beam variant |
 
