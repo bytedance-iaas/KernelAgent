@@ -117,10 +117,13 @@ Each round, in order (this mirrors
    one-time **Baseline Profiling** section comparing eager vs initial kernel.
 3. **Stop check** — if `roofline.at_roofline` (efficiency ≥ 95%), stop with
    success: the kernel is at the hardware limit.
-4. **PTX/SASS analysis** — `${CLAUDE_SKILL_DIR}/steps/03_ptx.md`
-   (static compiler-side view: spills, launch-bounds register budgets,
-   access widths, instruction-mix flags). Best-effort: on failure the
-   round proceeds with NCU data alone.
+4. **Static analysis** — `${CLAUDE_SKILL_DIR}/steps/03_static_analysis.md`
+   (MANDATORY every round, never skipped: both the PTX analysis — spills,
+   launch-bounds register budgets, access widths — and the SASS analysis —
+   opcode histogram, spill ops, load/store width mix — of the compiled
+   kernel). If the tool degrades, collect the missing half manually per
+   that step's fallback before diagnosing; a round must not reach step 05
+   without the static view.
 5. **Diagnose** — `${CLAUDE_SKILL_DIR}/steps/04_diagnose.md`
    (you classify the bottleneck and root causes, grounded in BOTH the NCU
    metrics and the PTX/SASS analysis — never a single tool).
@@ -155,8 +158,10 @@ table):
 - key NCU metrics when available: DRAM throughput %, DRAM BW (GB/s), warp
   active %, grid X, block X, blocks/SM, L1 hit %, L2 hit %, memory
   coalescing %, long-scoreboard stalls %
-- PTX/SASS flags when available: registers/spills and the high-severity
-  `flags` from `ptx_round_$ROUND.json` (one line each)
+- Static analysis (always present): registers/spills and the
+  high-severity `flags` from `static_round_$ROUND.json` (one line each);
+  if a half (PTX/SASS) had to be collected via the manual fallback or is
+  genuinely unavailable, say which and why
 - a compact code diff (± lines only, max 20) of parent → candidate:
   `diff -u parent.py candidate.py | grep -E '^[+-][^+-]' | head -20`
 - for failed candidates: the one-line failure reason
