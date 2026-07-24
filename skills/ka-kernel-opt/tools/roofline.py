@@ -75,7 +75,22 @@ def select_target_metrics(data: dict, kernel_name: str | None = None) -> tuple[s
         if not n.startswith("at::") and not n.startswith("void at::")
     }
     pool = non_torch or kernels
-    name = next(iter(pool))
+
+    # Cost-based selection, not launch order -- mirrors
+    # profile_ncu.py's pick_target_kernel (see that function's docstring: a
+    # kernel launching several real sub-kernels per call can have its true
+    # bottleneck be anything but the first launch; picking the first
+    # non-PyTorch kernel by insertion order silently profiles/diagnoses the
+    # wrong kernel on any multi-kernel problem). Falls back to launch order
+    # only when no candidate has a usable cycle count.
+    def _cost(name: str) -> float:
+        v = pool[name].get("sm__cycles_active.avg")
+        return v if isinstance(v, (int, float)) else -1.0
+
+    if any(_cost(n) >= 0 for n in pool):
+        name = max(pool, key=_cost)
+    else:
+        name = next(iter(pool))
     return name, pool[name]
 
 

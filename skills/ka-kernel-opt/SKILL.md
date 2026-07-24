@@ -80,6 +80,30 @@ each has a graceful fallback if absent):
 - `MAX_NO_IMPROVEMENT`: greedy early-stop plateau (default 5 rounds)
 - `BOTTLENECK_OVERRIDE` (optional): force `memory`/`compute`/`underutilized`
 - `STRATEGY`: `greedy` (default) or `beam` (see Variants)
+- `NICHE_WORKLOADS` (optional, default `false`): enable per-workload niching
+  + dispatch synthesis (direction 3, see Variants) instead of single-proxy
+  selection. Requires the problem to define `WORKLOADS` +
+  `build_workload_inputs(i)` (the unified `problem.md` contract) — has
+  nothing to do on problems with only one canonical workload.
+- `NUM_NICHES` (optional, default 3): representative workloads to track when
+  `NICHE_WORKLOADS=true`.
+- `LAZY_NICHE_SCAN` (optional, default `true`): at Finalize, run a
+  scripted (non-agent) post-hoc scan of every candidate the run already
+  produced — including rejected-but-correct regressions still on disk —
+  against other real workloads, and mechanically synthesize a dispatcher
+  if a safe one exists (see Variants). Mutually exclusive with
+  `NICHE_WORKLOADS=true`. Requires `WORKLOADS` + `build_workload_inputs`;
+  no-ops otherwise, so it's safe to leave on unconditionally, including on
+  single-workload problems.
+- `BESTOF3` (optional, default `false`): per round, generate 3 independent
+  rewrite candidates from the same diagnosis instead of 1, verify+benchmark
+  all 3, advance only on strict improvement (see `steps/08_bestof3.md`).
+  **Opt-in, not a safe default** — real, replicated wins on 2 of 4 tested
+  problems, no reliable benefit on the other 2; read
+  `steps/08_bestof3.md`'s "When this helps, honestly" section (or
+  `insights/BEST-OF-N RESAMPLING (IDEA F) - EXPLORATION.md`) before
+  recommending it for a given problem. Costs ~1.7-2.2x a vanilla round's
+  true compute, every round it runs.
 
 ## Workflow (optimize mode)
 
@@ -102,15 +126,21 @@ python "${CLAUDE_SKILL_DIR}/tools/program_db.py" init \
 Abort the run (`success: false`, error `"Initial kernel failed correctness
 verification"`) if the initial kernel fails its test.
 
+If `NICHE_WORKLOADS=true`, also do Step 1 of
+`${CLAUDE_SKILL_DIR}/steps/06_dispatch_synthesis.md` here (auto-select
+`NICHE_INDICES`, fixed for the rest of the run) before entering round 1.
+
 ### Rounds 1..MAX_ROUNDS
 Each round, in order (this mirrors
 `OptimizationManager.run_optimization` → `select_candidates` → worker →
 `update_with_results`):
 
-1. **Select the parent kernel** from the program database:
+1. **Select the parent kernel(s)** from the program database:
    - greedy: `program_db.py best` — always continue from the global best,
      unless step 05's divergence rule already chose the continuation.
    - beam: `program_db.py top --k 2` — the two parents for this round.
+   - `NICHE_WORKLOADS=true`: `program_db.py top-niche` (step 06, Step 3) —
+     one parent per distinct niche champion, same per-parent fan-out as beam.
 2. **Profile** — `${CLAUDE_SKILL_DIR}/steps/02_profile.md`
    (NCU + roofline + grid analysis on the parent kernel). In round 1 also
    profile the PyTorch eager reference once (`--target eager`) and report a
@@ -121,10 +151,19 @@ Each round, in order (this mirrors
    (you classify the bottleneck and root causes, grounded in metrics).
 5. **Rewrite** — `${CLAUDE_SKILL_DIR}/steps/04_rewrite.md`
    (consult `reference/` patterns; produce `kernel_candidate.py`).
+   `BESTOF3=true`: replace with `steps/08_bestof3.md` Step 1 — three
+   independent candidates from this same diagnosis instead of one.
 6. **Verify + Accept/Reject + Reflect** —
    `${CLAUDE_SKILL_DIR}/steps/05_verify_accept.md`
    (correctness with ≤3 refinements, benchmark, program-database update with
    lineage, two-track best tracking, divergence revert, reflexion).
+   `NICHE_WORKLOADS=true`: benchmark against every `NICHE_INDICES` workload
+   and register with `--metrics-by-workload` instead of a single time
+   (step 06, Step 2).
+   `BESTOF3=true`: replace with `steps/08_bestof3.md` Step 2-3 — verify +
+   benchmark all 3 candidates, pick the fastest that passed, and apply the
+   **strict** improvement-only gate (not the 50%-divergence-tolerant rule
+   above) before advancing.
 7. **Report the round** (see Round Reporting below).
 
 Additional stop conditions checked at the end of each round:
@@ -159,6 +198,17 @@ table):
 cp <best-runtime kernel> $KERNEL_DIR/optimized_kernel.py
 python "${CLAUDE_SKILL_DIR}/tools/program_db.py" top --db $RUN_DIR/program_db.json --k 5
 ```
+
+`NICHE_WORKLOADS=true`: replace the copy above with
+`${CLAUDE_SKILL_DIR}/steps/06_dispatch_synthesis.md` Step 4 — synthesize a
+dispatcher between champions if `top-niche` found more than one distinct
+program_id, otherwise copy the single champion as usual.
+
+`LAZY_NICHE_SCAN=true`: replace the copy above with
+`${CLAUDE_SKILL_DIR}/steps/07_lazy_niche_scan.md` — scan the existing
+program database (including rejected rounds) for a rescue opportunity and
+mechanically synthesize a dispatcher only if a safe one exists; otherwise
+copy the single champion as usual.
 
 Report the final result in the `run_optimization` contract, plus prose:
 
@@ -195,6 +245,85 @@ Report the final result in the `run_optimization` contract, plus prose:
 - **Profile / diagnose modes**: run steps 01–02 (and 03 for diagnose) once on
   the given kernel and present the metrics, roofline verdict, grid
   assessment, and (diagnose) root causes + recommended fixes — no rewrites.
+- **Niching (`NICHE_WORKLOADS=true`)**: implements "direction 3"
+  (`insights/DIRECTION 3 PROPOSAL - PER-WORKLOAD NICHING.md`) — track a
+  champion per representative workload (`program_db.py top-niche`) instead
+  of one global best, then synthesize a dispatcher between the intact
+  champions at Finalize (`steps/06_dispatch_synthesis.md`). The selection
+  mechanism is correct and repeatedly verified to protect real regressions
+  when they occur. **But a controlled, 3x-replicated test found it costs
+  more in per-round fix quality than it recovers through protection, at a
+  round budget matched to vanilla** — niching's extra per-round bookkeeping
+  (tracking `NUM_NICHES` workloads, checking `top-niche`, watching for
+  divergence) appears to come at the cost of shallower diagnosis/rewrite
+  depth, not just the expected extra benchmarking calls (see the proposal
+  doc's "Controlled comparison" section for the numbers). **Do not enable
+  this by default or recommend it for routine use** — it's implemented and
+  gated off (`NICHE_WORKLOADS=false` by default) as correct, working
+  infrastructure, not as something proven beneficial to turn on. The one
+  untested variable that could change this conclusion is round budget
+  scaled to `NUM_NICHES` rather than matched to vanilla's; unresolved.
+- **Lazy niche scan (`LAZY_NICHE_SCAN=true`)**: a redesign that avoids the
+  problem above by construction — the agent never knows this exists.
+  Runs the exact vanilla loop untouched; only at Finalize, a scripted,
+  non-agent pass (`steps/07_lazy_niche_scan.md`) checks whether any
+  already-produced candidate (including rounds rejected as regressions on
+  the canonical workload, still on disk, still correct) is secretly the
+  best choice for some other real workload, and mechanically synthesizes a
+  dispatcher — but only when the WORST regret across `--repeats` (default
+  3) independent measurement passes is below a safety threshold (1.10x);
+  otherwise it reports the finding and ships the canonical champion alone
+  rather than risk an unquantified regression. The repeat-and-take-worst
+  design is load-bearing, not defensive boilerplate: a single-pass version
+  of this gate, run live on a real shared GPU box, flipped between
+  "refuse" and "ship" on 2 of 5 identical sequential runs from ordinary
+  contention noise alone — a safety gate a single noisy sample can fool
+  isn't a safety gate. Also fixed after independent code review: the split
+  search only ever tried one label orientation, which could make it blind
+  to the correct routing rule entirely (see `docs/
+  KA_KERNEL_OPT_LAZY_NICHE_SCAN.md` §3.3 for the full list — 5 real bugs
+  found and fixed across two review passes, including this one, an
+  incomplete-benchmark-matrix gap, and a hardcoded-axis-extraction gap
+  now auto-verified before any dispatcher ships). Tested in offline replay
+  against 3 real controlled runs: 2/3 found nothing to rescue (cost: ~96
+  cheap benchmark calls per run, no change); 1/3 found a real one — **re-verified
+  after the orientation fix, achieves geomean ~1.176x with a perfect,
+  0-misclassification, 1.000x-worst-case-regret split**, matching the
+  idealized ceiling exactly (the pre-fix search only found a flawed rule
+  with 1.478x worst-case regression, understating what the mechanism can
+  actually do). Also exercised as a live, end-to-end feature (full
+  Setup→Rounds→Finalize on a real 4th problem, not just against
+  already-completed runs' saved program databases) — the pipeline and
+  dispatcher-codegen path are correct; that live run is also what
+  surfaced the noise-robustness gap the repeat-and-take-worst fix above
+  addresses, and separately found `pick_target_kernel()`'s
+  cost-based-not-launch-order fix (see `tools/profile_ncu.py`) — a
+  general multi-kernel-problem correctness fix, not niching-specific.
+  The one form of direction 3 with a positive, live-validated result
+  behind it — on by default.
+- **Best-of-3 resampling (`BESTOF3=true`)**: a different lever from
+  niching entirely — not selection between existing candidates, but
+  generating 3 independent implementations of the *same* diagnosed fix
+  each round instead of 1, verifying and benchmarking all 3, and keeping
+  the best (`steps/08_bestof3.md`). Only the rewrite step is resampled;
+  the diagnosis is one LLM call per round, same as vanilla. Tested on 4
+  real problems, with real replicates on each (not single-run comparisons)
+  after an initial mixed result turned out to be partly a harness bug (a
+  missing divergence-reversion gate): 2 of 4 problems (GDN, SOL-187) show
+  a real, replicated win (1.14x-1.56x); the other 2
+  (`fp8_group_gemm`, MoE L2/008) show no reliable separation from vanilla
+  once genuinely replicated, and MoE L2/008's replicate leaned the other
+  way. The pattern isn't random: it helps when a round's diagnosis is
+  likely right but its *implementation* is uncertain (multiple genuinely
+  different ways to build the fix, real risk of a fragile or
+  non-compiling "obvious" choice), and it doesn't help — and can waste
+  rounds — when the problem needs a long *sequence* of distinct diagnoses,
+  since resampling only multiplies attempts within one diagnosis, it
+  can't discover the next one. See `steps/08_bestof3.md`'s "When this
+  helps, honestly" for the full reasoning and a cheap, checkable-in-advance
+  heuristic (naive kernel's launch/operation diversity). **Opt-in only —
+  do not enable by default or recommend without checking that heuristic
+  first.**
 
 ## Ground Rules
 - NCU requires exclusive GPU access: never profile and benchmark at the same

@@ -279,11 +279,29 @@ def _is_number(s: str) -> bool:
 
 
 def pick_target_kernel(kernels: dict[str, dict]) -> str | None:
-    """First kernel that is not a PyTorch internal (at::*)."""
-    for name in kernels:
-        if not name.startswith("at::") and not name.startswith("void at::"):
-            return name
-    return next(iter(kernels), None)
+    """The most expensive non-PyTorch-internal (at::*) kernel, ranked by
+    sm__cycles_active.avg -- NOT simply the first one launched. A kernel
+    launching several real sub-kernels per call (quant, GEMM, routing, ...)
+    can have its true bottleneck be anything but the first launch; picking
+    launch order over cost silently profiles/diagnoses the wrong kernel on
+    any multi-kernel problem (found live: a 4-sub-kernel MoE routing
+    problem where the first-launched kernel had 44x less DRAM traffic than
+    the actual bottleneck). Falls back to launch order only when no
+    candidate kernel has a usable cycle count."""
+    candidates = [
+        name for name in kernels
+        if not name.startswith("at::") and not name.startswith("void at::")
+    ]
+    if not candidates:
+        return next(iter(kernels), None)
+
+    def _cost(name: str) -> float:
+        v = kernels[name].get("sm__cycles_active.avg")
+        return v if isinstance(v, (int, float)) else -1.0
+
+    if any(_cost(name) >= 0 for name in candidates):
+        return max(candidates, key=_cost)
+    return candidates[0]
 
 
 def main(argv: list[str] | None = None) -> int:
