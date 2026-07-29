@@ -1,0 +1,51 @@
+CUTLASS CuTe DSL KERNEL PROGRAMMING GUIDELINES
+
+Use the official CUTLASS Python CuTe DSL style.
+
+1. REQUIRED IMPORTS AND ENTRYPOINTS
+   - Import `torch`, `cutlass`, and `cutlass.cute as cute`.
+   - If explicit framework conversion is useful, import `from cutlass.cute.runtime import from_dlpack`.
+   - Define GPU work with `@cute.kernel`.
+   - Define host-side compiled launch helpers with `@cute.jit` when needed.
+   - The public Python entrypoint must be `kernel_function(...)`; tests import and call only this function.
+
+2. WRAPPER SHAPE
+   - `kernel_function(...)` accepts normal PyTorch tensors and scalars.
+   - The wrapper may validate shape/dtype/device, allocate output tensors, compute integer sizes, choose `grid` and `block`, convert tensors with `from_dlpack`, and launch CuTe DSL code.
+   - The wrapper must not perform numerical computation with PyTorch.
+   - Return PyTorch tensors that share the output buffers written by the CuTe DSL kernel.
+
+3. TENSOR CONVERSION
+   - Prefer explicit conversion in wrappers:
+     `x_cute = from_dlpack(x).mark_layout_dynamic()` for general strided tensors.
+   - Use `mark_compact_shape_dynamic(...)` when the tensor is contiguous/compact and some modes should stay specialized.
+   - For tiny fixed-shape kernels, implicit DLPack conversion by passing PyTorch tensors to a `@cute.jit` helper is acceptable, but explicit conversion is clearer for generated code.
+   - Preserve the lifetime of original PyTorch tensors while CuTe tensors are used.
+
+4. KERNEL SIGNATURE AND TYPES
+   - Annotate CuTe tensor arguments as `cute.Tensor`.
+   - Annotate runtime scalar sizes with CUTLASS numeric types such as `cutlass.Int32` when useful.
+   - Annotate compile-time constants, tile sizes, ranks, and fused epilogue functions with `cutlass.Constexpr`.
+   - Keep static values static so JIT caching and specialization work well.
+
+5. LAUNCH AND INDEXING
+   - Launch `@cute.kernel` functions with explicit `grid=[...]` and `block=[...]`.
+   - Use `cute.arch.thread_idx()`, `cute.arch.block_idx()`, and `cute.arch.block_dim()` for thread/block coordinates.
+   - Compute linear or multidimensional element coordinates from block/thread coordinates.
+   - Guard all edge tiles with `if idx < n` or equivalent predicates.
+   - Use `cluster`, `smem`, `max_number_threads`, or `min_blocks_per_mp` only when the kernel actually needs them.
+
+6. CUTE MEMORY AND MATH
+   - Use CuTe tensors, layouts, register tensors, and copy primitives; avoid raw Python list math for per-element GPU work.
+   - For tile code, use `cute.make_layout`, `cute.make_tensor`, `cute.make_rmem_tensor`, `cute.make_rmem_tensor_like`, `cute.copy`, `cute.make_identity_tensor`, and predication as appropriate.
+   - Use CuTe/CUTLASS math primitives, `cute.where` for predicated selection, reductions, or arch intrinsics instead of PyTorch math.
+   - For GEMM-like kernels, use tiled accumulation in fp32 and CuTe/CUTLASS MMA abstractions when feasible.
+
+7. CONTROL FLOW AND DEBUGGING
+   - The CuTe DSL preprocessor can preserve structured loops and branches for `@jit` and `@kernel`; use simple Python `for`/`if` that depends on tensor sizes, thread ids, or constexpr values.
+   - Use Python `print()` only for compile/meta-stage diagnostics.
+   - Use `cute.printf()` only for GPU runtime debugging and remove or minimize it in final code.
+
+8. STRICT NO-CHEATING RULES
+   - Do not compute outputs with `torch.nn`, `torch.nn.functional`, `torch.*` math, tensor arithmetic, reductions, activations, pooling, `torch.ops.aten.*`, or hidden PyTorch helper functions.
+   - PyTorch is allowed only for allocation, validation, device/dtype checks, and reference code inside tests.

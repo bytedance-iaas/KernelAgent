@@ -38,6 +38,7 @@ class WorkerManager:
         openai_model: str = "gpt-5",
         high_reasoning_effort: bool = True,
         target_platform: str = "cuda",
+        kernel_backend: str = "triton",
         no_cusolver: bool = False,
         test_timeout_s: int = 30,
     ):
@@ -53,6 +54,7 @@ class WorkerManager:
             openai_model: OpenAI model name
             high_reasoning_effort: Whether to use high reasoning effort for OpenAI models
             target_platform: Target platform ('cuda' or 'xpu')
+            kernel_backend: Kernel source backend to generate (triton or cutedsl)
             no_cusolver: If True, disables cuSolver library usage
             test_timeout_s: Timeout in seconds for test execution
         """
@@ -63,6 +65,7 @@ class WorkerManager:
         self.openai_model = openai_model
         self.high_reasoning_effort = high_reasoning_effort
         self.target_platform = target_platform
+        self.kernel_backend = kernel_backend
         self.no_cusolver = no_cusolver
         self.test_timeout_s = test_timeout_s
 
@@ -170,6 +173,7 @@ class WorkerManager:
                     self.openai_model,
                     self.high_reasoning_effort,
                     self.target_platform,
+                    self.kernel_backend,
                     self.no_cusolver,
                     self.test_timeout_s,
                 )
@@ -236,6 +240,7 @@ def worker_process(
     openai_model: str,
     high_reasoning_effort: bool,
     target_platform: str,
+    kernel_backend: str = "triton",
     no_cusolver: bool = False,
     test_timeout_s: int = 30,
 ):
@@ -257,6 +262,7 @@ def worker_process(
         openai_model=openai_model,
         high_reasoning_effort=high_reasoning_effort,
         target_platform=target_platform,
+        kernel_backend=kernel_backend,
         no_cusolver=no_cusolver,
         test_timeout_s=test_timeout_s,
     )

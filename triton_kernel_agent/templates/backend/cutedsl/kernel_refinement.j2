@@ -1,0 +1,54 @@
+{{ backend_guidelines }}
+
+TASK: Fix the following CUTLASS CuTe DSL implementation based on the test results.
+
+TEST CODE:
+```python
+{{ test_code }}
+```
+
+CURRENT KERNEL IMPLEMENTATION:
+```python
+{{ kernel_code }}
+```
+
+TEST RESULTS:
+Error output: {{ error_info.stderr or 'None' }}
+Standard output: {{ error_info.stdout or 'None' }}
+
+{% if history_context -%}
+{{ history_context }}
+{%- endif %}
+
+OUTPUT FORMAT REQUIREMENTS:
+- Return exactly one fenced Python code block containing the full corrected file.
+- Do not send diffs.
+- Do not switch to Triton, CUDA C++, or PyTorch compute.
+
+FIXING PRIORITIES:
+1. Preserve the public `kernel_function(...)` API expected by the test.
+2. Keep all numerical work in `@cute.kernel` or `@cute.jit` CuTe DSL code.
+3. If the failure is an import/API problem, use official CUTLASS CuTe DSL names:
+   - `import cutlass`
+   - `import cutlass.cute as cute`
+   - `from cutlass.cute.runtime import from_dlpack`
+   - `@cute.kernel`
+   - `@cute.jit`
+   - `cute.Tensor`
+   - `cutlass.Int32`
+   - `cutlass.Constexpr`
+   - `cute.arch.thread_idx()`, `cute.arch.block_idx()`, `cute.arch.block_dim()`
+4. If the failure is layout/argument conversion, convert PyTorch tensors with `from_dlpack(...)` and mark dynamic layouts explicitly.
+5. If the failure is a launch error, ensure the `@cute.kernel` call passes `grid=[...]` and `block=[...]`.
+6. If the failure is numerical, fix the CuTe load/compute/store logic; do not loosen tests or use PyTorch fallback.
+7. If the failure is edge-tile related, add predicates for every out-of-bounds load/store.
+
+STRICTLY FORBIDDEN:
+- Do not compute outputs with PyTorch operators.
+- Do not use `torch.nn`, `torch.nn.functional`, tensor arithmetic, reductions, activations, pooling, `torch.ops.aten.*`, or hidden PyTorch helper functions.
+- Do not return a placeholder, mock, or reference result.
+{% if no_cusolver %}
+- Do not rely on cuSolver libraries (`torch.linalg.svd`, `torch.linalg.eigh`, etc.).
+{% endif %}
+
+Generate the complete corrected CuTe DSL Python file now.

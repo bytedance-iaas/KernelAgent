@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #}
 
-Generate a comprehensive test for a Triton kernel based on the following problem description:
+Generate a comprehensive test for a {{ kernel_backend_display | default("Triton") }} kernel based on the following problem description:
 
 {{ problem_description }}
 
@@ -44,7 +44,7 @@ REQUIREMENTS:
 1. The test must be a complete, valid Python file
 2. Import the kernel function using: from kernel import kernel_function
 3. Call kernel_function as a NORMAL PYTHON FUNCTION (no grid configuration or kernel launch)
-4. The kernel.py file will handle all Triton-specific launch logic internally
+4. The kernel.py file will handle all {{ kernel_backend_display | default("Triton") }}-specific launch logic internally
 5. Create appropriate test data (e.g., torch tensors on {{ device_string }} device)
 6. Pass test data to kernel_function as regular function arguments
 7. Verify the results are correct
@@ -98,12 +98,12 @@ NUMERICAL TOLERANCE REQUIREMENTS:
   - If accumulation dimension is very large, use much larger tolerances, like 1e-1
 - Always document in comments why non-default tolerances are used
 
-IMPORTANT: Do NOT use any Triton kernel launch syntax. Treat kernel_function as a regular Python function.
+IMPORTANT: Do NOT use any {{ kernel_backend_display | default("Triton") }} kernel launch syntax. Treat kernel_function as a regular Python function.
 
 The test file structure should be:
 ```python
 import torch
-# other imports as needed (but NOT triton - that's handled in kernel.py)
+# other imports as needed, but do not import the kernel backend runtime here - that is handled in kernel.py
 
 # Comment for summary of original problem description
 def test_kernel():

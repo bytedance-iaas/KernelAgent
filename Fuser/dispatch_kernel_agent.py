@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Dispatch subgraphs (from subgraphs.json) to KernelAgent to generate Triton kernels.
+Dispatch subgraphs (from subgraphs.json) to KernelAgent to generate kernels.
 
 For each JSON item (a unique, shape-specific subgraph), we synthesize a clear
 problem description that enumerates ops, exact shapes, and a PyTorch reference
@@ -49,6 +49,11 @@ try:
 except Exception:  # pragma: no cover - import-time dependency
     TritonKernelAgent = None  # type: ignore
 
+from triton_kernel_agent.kernel_backend_config import (
+    KernelBackendConfig,
+    get_kernel_backend,
+    get_kernel_backend_choices,
+)
 from triton_kernel_agent.platform_config import (
     get_platform,
     get_platform_choices,
@@ -259,7 +264,9 @@ def _build_reference_code(item: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def _synthesize_problem_description(
-    item: dict[str, Any], target_platform: PlatformConfig
+    item: dict[str, Any],
+    target_platform: PlatformConfig,
+    kernel_backend: KernelBackendConfig,
 ) -> str:
     id_ = str(item.get("id", "unknown"))
     type_ = str(item.get("type", ""))
@@ -277,7 +284,7 @@ def _synthesize_problem_description(
     # Get device string for the platform
     header = textwrap.dedent(
         f"""
-        Implement a Triton kernel that computes the following subgraph end-to-end.
+        Implement a {kernel_backend.display_name} kernel that computes the following subgraph end-to-end.
 
         Subgraph ID: {id_}
         Type: {type_}
@@ -285,6 +292,7 @@ def _synthesize_problem_description(
         DType: {dtype}
         Target Platform: {target_platform.name}
         Device String: {target_platform.device_string}
+        Kernel Backend: {kernel_backend.name}
 
         Shapes:
         - input: {_fmt_shape(inputs_multi[0]) if isinstance(inputs_multi, list) else _fmt_shape(input_shape)}
@@ -298,12 +306,13 @@ def _synthesize_problem_description(
         {json.dumps(item.get("ops", []), indent=2)}
 
         Requirements:
-        - Return a complete Python file with a @triton.jit kernel and a wrapper function named kernel_function(...).
+        - Return a complete Python file with {kernel_backend.display_name} kernel code and a wrapper function named kernel_function(...).
         - kernel_function must accept input tensor(s) and any required weights/bias parameters (match shapes above).
         - Implement the exact semantics of the listed ops in the given order for the provided shapes.
         - Use {layout} layout and {dtype} dtype semantics.
         - Allocate inputs, weights, intermediates, and outputs on device='{target_platform.device_string}' and keep them there throughout forward/verification.
         - CPU is acceptable only for metadata, scalars, and export serialization—avoid `.cpu()` or `.to('cpu')` on compute tensors.
+        - All numerical computation must happen in {kernel_backend.display_name} kernel code; do not use PyTorch compute ops to satisfy the subgraph.
         - The test will import kernel_function and compare to the reference implementation below.
 
         Test tolerance policy (enforced in generated tests):
@@ -332,6 +341,7 @@ def run(
     agent_model: str | None = None,
     jobs: int = 1,
     target_platform: str = "cuda",
+    kernel_backend: str = "triton",
     max_iters: int = 10,
     no_cusolver: bool = False,
     test_timeout_s: int = 30,
@@ -345,6 +355,7 @@ def run(
         raise SystemExit(
             "TritonKernelAgent not available. Ensure the package is importable."
         )
+    backend = get_kernel_backend(kernel_backend)
 
     with subgraphs_path.open("r", encoding="utf-8") as f:
         items: list[dict[str, Any]] = json.load(f)
@@ -360,7 +371,11 @@ def run(
     def _handle_one(idx_item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, item = idx_item
         sid = str(item.get("id", f"subgraph_{idx}"))
-        pdesc = _synthesize_problem_description(item, target_platform=platform)
+        pdesc = _synthesize_problem_description(
+            item,
+            target_platform=platform,
+            kernel_backend=backend,
+        )
         sg_dir = out_dir / sid
         sg_dir.mkdir(parents=True, exist_ok=True)
         (sg_dir / "problem.txt").write_text(pdesc, encoding="utf-8")
@@ -371,6 +386,7 @@ def run(
             max_rounds=max_iters,
             model_name=agent_model,
             target_platform=platform,
+            kernel_backend=backend.name,
             no_cusolver=no_cusolver,
             test_timeout_s=test_timeout_s,
         )
@@ -400,6 +416,7 @@ def run(
                 "rounds": result.get("rounds"),
                 "session_dir": result.get("session_dir"),
                 "kernel_path": str((sg_dir / "kernel.py").resolve()),
+                "kernel_backend": backend.name,
             }
         else:
             return idx, {
@@ -436,7 +453,7 @@ def run(
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(
-        description="Generate Triton kernels for subgraphs via KernelAgent"
+        description="Generate kernels for subgraphs via KernelAgent"
     )
     p.add_argument(
         "--subgraphs", required=True, help="Path to subgraphs.json produced by Fuser"
@@ -467,6 +484,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=get_platform_choices(),
         help="Target platform (default: cuda)",
     )
+    p.add_argument(
+        "--kernel-backend",
+        default="triton",
+        choices=get_kernel_backend_choices(),
+        help="Kernel source backend to generate (default: triton)",
+    )    
     p.add_argument(
         "--no-cusolver",
         action="store_true",
@@ -500,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_model=args.agent_model,
         jobs=jobs_val,
         target_platform=args.target_platform,
+        kernel_backend=args.kernel_backend,
         no_cusolver=args.no_cusolver,
         test_timeout_s=args.test_timeout_s,
     )
