@@ -49,6 +49,11 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from triton_kernel_agent.kernel_backend_config import (
+    KernelBackendConfig,
+    get_kernel_backend,
+    get_kernel_backend_choices,
+)
 from triton_kernel_agent.platform_config import (
     get_platform,
     get_platform_choices,
@@ -139,6 +144,7 @@ def _build_composition_prompt(
     subgraphs: list[dict[str, Any]],
     kernel_items: list[KernelItem],
     target_platform: PlatformConfig,
+    kernel_backend: KernelBackendConfig,
 ) -> str:
     """Create a single user message to instruct composition by the LLM."""
     # Provide a succinct summary of subgraphs up front
@@ -160,14 +166,15 @@ def _build_composition_prompt(
         You are given:
         - The original problem file (PyTorch module and helpers).
         - A decomposition of the model into fusable subgraphs with exact shapes.
-        - Working Triton kernels generated for some subgraphs.
+        - Working {kernel_backend.display_name} kernels generated for some subgraphs.
 
         TARGET PLATFORM: {target_platform.name}
         DEVICE STRING: {target_platform.device_string}
+        KERNEL BACKEND: {kernel_backend.name}
         {platform_guidance}
 
         Task:
-        - Compose an end-to-end Triton implementation that matches the original
+        - Compose an end-to-end {kernel_backend.display_name} implementation that matches the original
           model's forward pass for the provided shapes. You may inline, adapt,
           or reuse the given subgraph kernels. Prefer fusing into as few kernel
           launches as possible while preserving exact numerical semantics.
@@ -176,26 +183,16 @@ def _build_composition_prompt(
         - Return ONE complete Python file only, fenced as a single ```python block.
         - Allocate inputs, weights, intermediates, and outputs on device='{target_platform.device_string}' and keep them there throughout forward/verification.
         - CPU is acceptable only for metadata, scalars, and export serialization—avoid `.cpu()` or `.to('cpu')` on compute tensors.
-        - Provide at least one @triton.jit kernel and a top-level Python wrapper
-          named kernel_function(...). This wrapper must accept the same primary
-          input tensor(s) as the model and any required weights/biases with shapes
-          implied by the problem; it should orchestrate Triton kernel(s) and
-          return the final output tensor.
-        - No PyTorch math path: kernel_function MUST compute the final outputs
-          using your Triton kernels only. Do NOT implement or fall back to
-          torch.nn / torch.nn.functional / torch.* ops
-          sigmoid, etc.) for producing the final result. Using PyTorch for
-          reference comparisons is allowed only inside the self-test.
+        {kernel_backend.composition_requirements}
         - Use the data layout and dtype semantics indicated by subgraphs, defaulting
           to NCHW + float32 if unspecified. Respect stride/padding/dilation/groups,
           and exact op order.
         - Numerical equivalence: include a self-test (test_kernel or run_tests)
-          that compares your Triton-based result to a PyTorch reference computed
+          that compares your {kernel_backend.display_name}-based result to a PyTorch reference computed
           from the original problem code below (use get_init_inputs() and
           get_inputs() if present to instantiate the Model). The test must print
           'PASS' on success and exit with code 0. Use allclose with rtol<=1e-3,
           atol<=1e-3 for fp32; for fp16/bf16 allow up to 2e-2.
-        - No imports beyond torch, triton, triton.language as tl, and stdlib. No I/O.
         - Do NOT monkey-patch PyTorch device functions or torch.cuda.is_available()
         - Do NOT manipulate TRITON_BACKENDS environment variable
         - Do NOT disable or mock XPU/CUDA drivers
@@ -203,12 +200,7 @@ def _build_composition_prompt(
         Implementation tips:
         - If merging multiple subgraphs, ensure intermediate tensor shapes match.
         - Hoist constant weights or parameters to avoid reloading per block.
-        - Use tl.load/tl.store with masks for boundary conditions.
-        - Favor coalesced memory access; tile by blocks; compute grid from shape.
-        - Common Triton pitfalls to avoid:
-          * Do NOT call tl.broadcast on Python scalars; tl.maximum(x, 0.0) works.
-          * Prefer scalar constants directly in elementwise ops (no explicit broadcast needed).
-          * Keep BLOCK_SIZE power-of-two; mask stores at tail.
+        {kernel_backend.composition_tips}
         """
     ).strip()
 
@@ -239,6 +231,7 @@ def _build_refinement_prompt(
     previous_code: str,
     error_info: dict[str, str],
     target_platform: PlatformConfig,
+    kernel_backend: KernelBackendConfig,
 ) -> str:
     """Prompt the LLM to refine the previously produced code based on errors."""
     err_tail = error_info.get("stderr_tail", "")
@@ -246,21 +239,20 @@ def _build_refinement_prompt(
 
     guidance = textwrap.dedent(
         f"""
-        You previously produced a composed Triton implementation, but it failed
+        You previously produced a composed {kernel_backend.display_name} implementation, but it failed
         to run/compile. Analyze the ERROR_CONTEXT below and re-emit the entire
         corrected single-file implementation as one ```python block.
 
         TARGET PLATFORM: {target_platform.name}
         DEVICE STRING: {target_platform.device_string}
+        KERNEL BACKEND: {kernel_backend.name}
 
         Requirements remain the same. Additionally:
-        - Fix any Triton compilation/runtime errors. For scalar constants in
-          elementwise ops (e.g., ReLU), do not use tl.broadcast. Use direct
-          scalars like 0.0 in tl.maximum(x, 0.0).
+        - Fix any {kernel_backend.display_name} compilation/runtime errors.
         - Keep function name kernel_function(...) unchanged and retain the
           self-test that prints PASS on success and exits 0.
         - Do NOT reintroduce any PyTorch math path in kernel_function. The final
-          outputs must be computed via your Triton kernels only (no fallback to
+          outputs must be computed via your {kernel_backend.display_name} kernels only (no fallback to
           torch.nn / torch.nn.functional ops).
         - Return the complete corrected file; do not send diffs.
         """
@@ -340,6 +332,7 @@ def compose(
     verify: bool = False,
     max_iters: int = 5,
     target_platform: str = "cuda",
+    kernel_backend: str = "triton",
 ) -> dict[str, Any]:
     if get_model_provider is None:
         raise SystemExit(
@@ -351,6 +344,7 @@ def compose(
 
     # Platform
     platform = get_platform(target_platform)
+    backend = get_kernel_backend(kernel_backend)
 
     # Load inputs
     problem_code = _read_text(problem_path)
@@ -369,7 +363,11 @@ def compose(
     for i in range(1, max_iters + 1):
         if i == 1 or last_code is None:
             prompt = _build_composition_prompt(
-                problem_code, subgraphs, kernels, target_platform=platform
+                problem_code,
+                subgraphs,
+                kernels,
+                target_platform=platform,
+                kernel_backend=backend,
             )
         else:
             # Build refinement using previous error info
@@ -401,6 +399,7 @@ def compose(
                 previous_code=last_code,
                 error_info={"stderr_tail": stderr_tail, "stdout_tail": stdout_tail},
                 target_platform=platform,
+                kernel_backend=backend,
             )
 
         (attempts_dir / f"attempt_{i}.prompt.txt").write_text(prompt, encoding="utf-8")
@@ -413,8 +412,11 @@ def compose(
         # Extract code
         extracted = extract_single_python_file(raw_text)
         code = extracted.code
-        # Auto-patch trivial Triton pitfalls before running
-        code, changed = _auto_patch_common_triton_issues(code, platform)
+        if backend.name == "triton":
+            # Auto-patch trivial Triton pitfalls before running.
+            code, changed = _auto_patch_common_triton_issues(code, platform)
+        else:
+            changed = False
         (attempts_dir / f"attempt_{i}.py").write_text(code, encoding="utf-8")
         last_code = code
 
@@ -452,6 +454,7 @@ def compose(
         "usage": last_usage,
         "rounds": i,
         "target_platform": target_platform,
+        "kernel_backend": backend.name,
     }
     result.update(verify_info)
 
@@ -497,6 +500,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=get_platform_choices(),
         help="Target platform (default: cuda)",
     )
+    p.add_argument(
+        "--kernel-backend",
+        default="triton",
+        choices=get_kernel_backend_choices(),
+        help="Kernel source backend to generate (default: triton)",
+    )    
     p.add_argument("--max-iters", type=int, default=5, help="Max LLM refinement rounds")
     args = p.parse_args(argv)
 
@@ -525,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             verify=args.verify,
             max_iters=args.max_iters,
             target_platform=args.target_platform,
+            kernel_backend=args.kernel_backend,
         )
         print(json.dumps(res, indent=2))
         return 0

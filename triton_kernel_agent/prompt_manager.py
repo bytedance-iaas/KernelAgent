@@ -16,6 +16,7 @@
 
 from pathlib import Path
 
+from triton_kernel_agent.kernel_backend_config import get_kernel_backend
 from triton_kernel_agent.platform_config import get_platform, PlatformConfig
 
 try:
@@ -44,6 +45,7 @@ class PromptManager:
         self,
         templates_dir: str | None = None,
         target_platform: PlatformConfig | None = None,
+        kernel_backend: str = "triton",
         template_overrides: dict[str, str] | None = None,
     ):
         """
@@ -52,6 +54,7 @@ class PromptManager:
         Args:
             templates_dir: Path to the templates directory. If None, uses default.
             target_platform: Target platform PlatformConfig
+            kernel_backend: Kernel source backend to generate (triton or cutedsl)
             template_overrides: Optional dict mapping logical template names to
                 absolute file paths for custom .j2 files.  Only the optimization
                 templates (kernel_optimization, reflexion_prompt, triton_guidelines)
@@ -65,6 +68,7 @@ class PromptManager:
         if target_platform is None:
             target_platform = get_platform("cuda")
         self.target_platform = target_platform
+        self.kernel_backend = get_kernel_backend(kernel_backend)
         # Set up templates directory
         if templates_dir:
             self.templates_dir = Path(templates_dir)
@@ -102,8 +106,9 @@ class PromptManager:
         # Define template mappings (required templates)
         template_files = {
             "test_generation": "test_generation.j2",
-            "kernel_generation": "kernel_generation.j2",
-            "kernel_refinement": "kernel_refinement.j2",
+            "kernel_generation": self.kernel_backend.generation_template,
+            "kernel_refinement": self.kernel_backend.refinement_template,
+            "backend_guidelines": self.kernel_backend.guidelines_template,
             "kernel_optimization": "kernel_optimization.j2",
             "triton_guidelines": "triton_guidelines.j2",
         }
@@ -161,6 +166,8 @@ class PromptManager:
             problem_description=problem_description,
             provided_test_code=provided_test_code,
             device_string=self.target_platform.device_string,
+            kernel_backend=self.kernel_backend.name,
+            kernel_backend_display=self.kernel_backend.display_name,            
         )
 
     def render_kernel_generation_prompt(
@@ -176,7 +183,7 @@ class PromptManager:
         Args:
             problem_description: Description of the kernel to generate
             test_code: Test code that the kernel must pass
-            triton_guidelines: Optional guidelines (if None, loads from template)
+            triton_guidelines: Optional backend guidelines (if None, loads from template)
             no_cusolver: If True, disables cuSolver library usage
 
         Returns:
@@ -184,14 +191,15 @@ class PromptManager:
         """
         template = self.templates["kernel_generation"]
 
-        # Load triton guidelines if not provided
+        # Keep the parameter name for compatibility while allowing non-Triton backends.
         if triton_guidelines is None:
-            triton_guidelines = self.render_triton_guidelines()
+            triton_guidelines = self.render_backend_guidelines()
 
         return template.render(
             problem_description=problem_description,
             test_code=test_code,
             triton_guidelines=triton_guidelines,
+            backend_guidelines=triton_guidelines,
             kernel_guidance=self.target_platform.kernel_guidance,
             no_cusolver=no_cusolver,
         )
@@ -215,7 +223,7 @@ class PromptManager:
             kernel_code: Current kernel implementation
             error_info: Dictionary with error information (stdout, stderr)
             history_context: Optional context from previous attempts
-            triton_guidelines: Optional guidelines (if None, loads from template)
+            triton_guidelines: Optional backend guidelines (if None, loads from template)
             no_cusolver: If True, disables cuSolver library usage
 
         Returns:
@@ -223,9 +231,9 @@ class PromptManager:
         """
         template = self.templates["kernel_refinement"]
 
-        # Load triton guidelines if not provided
+        # Keep the parameter name for compatibility while allowing non-Triton backends.
         if triton_guidelines is None:
-            triton_guidelines = self.render_triton_guidelines()
+            triton_guidelines = self.render_backend_guidelines()
 
         return template.render(
             problem_description=problem_description,
@@ -234,6 +242,7 @@ class PromptManager:
             error_info=error_info,
             history_context=history_context,
             triton_guidelines=triton_guidelines,
+            backend_guidelines=triton_guidelines,
             kernel_guidance=self.target_platform.kernel_guidance,
             no_cusolver=no_cusolver,
         )
@@ -365,6 +374,16 @@ Respond with JSON containing:
             Rendered guidelines string
         """
         template = self.templates["triton_guidelines"]
+        return template.render()
+
+    def render_backend_guidelines(self) -> str:
+        """
+        Render guidelines for the selected kernel backend.
+
+        Returns:
+            Rendered guidelines string
+        """
+        template = self.templates["backend_guidelines"]
         return template.render()
 
     def get_template(self, template_name: str) -> Template:

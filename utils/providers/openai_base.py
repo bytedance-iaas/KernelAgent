@@ -16,6 +16,7 @@
 
 from typing import Any
 import logging
+import os
 from .base import BaseProvider, LLMResponse
 from .env_config import configure_proxy_environment
 
@@ -36,6 +37,19 @@ class OpenAICompatibleProvider(BaseProvider):
         self.base_url = base_url
         self._original_proxy_env = None
         super().__init__()
+
+    def _get_base_url_from_env(self) -> str | None:
+        """Resolve an optional OpenAI-compatible base URL from environment."""
+        for key in (
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE_URL",
+            "OPENAI_API_BASE",
+            "OPENAI_COMPATIBLE_BASE_URL",
+        ):
+            value = os.getenv(key)
+            if value:
+                return value
+        return None
 
     def _initialize_client(self) -> None:
         """Initialize OpenAI-compatible client."""

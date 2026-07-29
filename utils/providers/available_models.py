@@ -38,6 +38,26 @@ AVAILABLE_MODELS = [
         provider_classes=[OpenAIProvider],
         description="GPT-5.2 flagship model (Released Dec 2025)",
     ),
+    ModelConfig(
+        name="gpt-5.4",
+        provider_classes=[OpenAIProvider],
+        description="GPT-5.4 flagship model",
+    ),
+    ModelConfig(
+        name="gpt-5.3-codex-spark",
+        provider_classes=[OpenAIProvider],
+        description="GPT-5.3 Codex Spark model",
+    ),
+    ModelConfig(
+        name="gpt-5.4-mini",
+        provider_classes=[OpenAIProvider],
+        description="GPT-5.4 mini model",
+    ),
+    ModelConfig(
+        name="gpt-5.5",
+        provider_classes=[OpenAIProvider],
+        description="GPT-5.5 flagship model",
+    ),        
     # Anthropic Claude 4 Models (Latest)
     ModelConfig(
         name="claude-opus-4-6",
@@ -79,4 +99,9 @@ AVAILABLE_MODELS = [
         provider_classes=[RelayProvider],
         description="GPT-5.2 flagship model (Dec 2025) - Note the name is different from the OpenAI model",
     ),
+    ModelConfig(
+        name="gpt-5-4",
+        provider_classes=[RelayProvider],
+        description="GPT-5.4 flagship model - Note the name is different from the OpenAI model",
+    ),    
 ]

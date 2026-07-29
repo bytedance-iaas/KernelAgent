@@ -30,6 +30,7 @@ dispatch_jobs: 2
 # Routing behavior
 allow_fallback: true
 target_platform: cuda
+kernel_backend: triton
 ignore_router_config: false
 use_router_cache: true
 no_cusolver: false
