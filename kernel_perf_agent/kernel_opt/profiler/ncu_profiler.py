@@ -46,6 +46,14 @@ METRICS = ",".join(
         "launch__occupancy_limit_registers",
         "launch__occupancy_limit_shared_mem",
         "launch__registers_per_thread",
+        # Grid / launch shape — key for diagnosing too-few-blocks or too-many-waves
+        "launch__block_dim_x",
+        "launch__block_dim_y",
+        "launch__block_dim_z",
+        "launch__grid_dim_x",
+        "launch__grid_dim_y",
+        "launch__grid_dim_z",
+        "launch__blocks_per_multiprocessor",
         "sm__inst_executed.sum",
         "sm__inst_executed_pipe_fp32.avg.pct_of_peak_sustained_active",
         "sm__inst_executed_pipe_tensor.avg.pct_of_peak_sustained_active",
@@ -192,7 +200,8 @@ def profile_triton_kernel(
     print(f"[NCU] Benchmark: {benchmark_script.name}")
     print(f"[NCU] Output: {csv_path}")
     print(f"[NCU] Using sudo: {use_sudo}")
-    print(f"[NCU] Command: {' '.join(cmd[:10])}... (truncated)")
+    # henryg temporarily disable the output
+    #print(f"[NCU] Command: {' '.join(cmd[:10])}... (truncated)")
 
     try:
         result = subprocess.run(

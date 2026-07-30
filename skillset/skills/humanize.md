@@ -22,7 +22,7 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 - State whether the change affects kernel generation, Fuser orchestration, optimization, profiling, benchmarking, UI scripts, examples, or packaging.
 - Include the target platform: CUDA, XPU, or platform-neutral.
-- Include the target kernel backend when relevant: Triton, cuteDSL, TileLang, or backend-neutral.
+- Include the target kernel language when relevant: Triton, cuteDSL, TileLang, or language-neutral.
 - For Release #1 work, state whether the task targets SM90 FP8 GEMM and which of the Triton/cuteDSL/TileLang generation paths it exercises.
 - Include expected artifact changes under `.fuse/`, `.optimize/`, `triton_kernel_logs/`, or worker artifact directories.
 - Include the validation plan: relevant `CONTRIBUTING.md` test/example commands, import smoke checks if applicable, and baseline/post-change performance expectations for performance-sensitive changes.
@@ -30,7 +30,7 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 ## Supported Humanize Workflows
 
-- `/humanize:gen-idea`: use for repo-grounded idea discovery before a concrete plan exists. Ideas should identify the affected KernelAgent subsystem, target platform, target kernel backend, validation path, and whether the idea advances Release #1 SM90 FP8 GEMM, multi-DSL generation, or optimization tooling.
+- `/humanize:gen-idea`: use for repo-grounded idea discovery before a concrete plan exists. Ideas should identify the affected KernelAgent subsystem, target platform, target kernel language, validation path, and whether the idea advances Release #1 SM90 FP8 GEMM, multi-DSL generation, or optimization tooling.
 - `/humanize:gen-plan`: use for turning a selected idea or draft into an implementation plan. Plans must include the context checklist above and keep Humanize outside KernelAgent runtime dependencies.
 - `/humanize:refine-plan`: use when reviewer notes, user annotations, or Codex findings require plan cleanup. Refinement must preserve the target platform/backend context, runtime boundary, validation requirements, and original draft intent.
 - `/humanize:start-rlcr-loop`: use for implementation rounds after a plan is ready. RLCR work should follow the plan's task routing, maintain deterministic validation, and treat Codex review feedback as a gate before completion.
@@ -38,12 +38,12 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 ## Review Checklist For Codex/Humanize
 
-- Correctness: enforce the runtime constraints in the selected backend guidance: `triton_kernel_agent/templates/backend/triton/guidelines.j2`, `triton_kernel_agent/templates/backend/cutedsl/guidelines.j2`, or `triton_kernel_agent/templates/backend/tilelang/guidelines.j2`.
+- Correctness: enforce the runtime constraints in the selected language guidance: `triton_kernel_agent/templates/backend/triton/guidelines.j2`, `triton_kernel_agent/templates/backend/cutedsl/guidelines.j2`, or `triton_kernel_agent/templates/backend/tilelang/guidelines.j2`.
 - Verification: changes should preserve strict PASS/sentinel-based verification semantics and avoid weakening tests.
 - Performance: benchmark/profiling changes should respect existing warmup/repeat, timeout, lock, and semaphore constraints.
-- Prompt changes: avoid duplicating backend guidance templates; prefer references or targeted deltas.
+- Prompt changes: avoid duplicating language guidance templates; prefer references or targeted deltas.
 - Platform support: when touching device allocation or backend behavior, state whether the change follows or updates `triton_kernel_agent/platform_config.py`.
-- Kernel backend support: when touching Triton, cuteDSL, or TileLang generation paths, state whether the change follows or updates `triton_kernel_agent/kernel_backend_config.py`.
+- Kernel language support: when touching Triton, cuteDSL, or TileLang generation paths, state whether the change follows or updates `triton_kernel_agent/kernel_language_config.py`.
 - Artifacts: preserve reproducibility and avoid changing artifact schemas without tests or migration notes.
 - Dependencies: keep Humanize optional; do not add it to runtime dependencies.
 
@@ -51,8 +51,8 @@ Humanize uses Codex as an independent reviewer during its review loop, so review
 
 - `triton_kernel_agent/templates/backend/triton/guidelines.j2` for Triton coding constraints and examples.
 - `triton_kernel_agent/platform_config.py` for CUDA/XPU platform guidance.
-- `triton_kernel_agent/kernel_backend_config.py` for Triton, cuteDSL, and TileLang backend routing and composition requirements.
-- `Fuser/config/autoagent_default.yml` for default Fuser routing, target platform, and kernel backend settings.
+- `triton_kernel_agent/kernel_language_config.py` for Triton, cuteDSL, and TileLang language routing and composition requirements.
+- `Fuser/config/autoagent_default.yml` for default Fuser routing, target platform, and kernel language settings.
 - `triton_kernel_agent/templates/backend/cutedsl/` for cuteDSL generation/refinement/guideline templates.
 - `triton_kernel_agent/templates/backend/tilelang/` for TileLang generation/refinement/guideline templates.
 - `triton_kernel_agent/templates/kernel_optimization.j2` for optimization prompt context.

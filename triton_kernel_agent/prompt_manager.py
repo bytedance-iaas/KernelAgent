@@ -16,7 +16,7 @@
 
 from pathlib import Path
 
-from triton_kernel_agent.kernel_backend_config import get_kernel_backend
+from triton_kernel_agent.kernel_language_config import get_kernel_language_config
 from triton_kernel_agent.platform_config import get_platform, PlatformConfig
 
 try:
@@ -45,8 +45,8 @@ class PromptManager:
         self,
         templates_dir: str | None = None,
         target_platform: PlatformConfig | None = None,
-        kernel_backend: str = "triton",
         template_overrides: dict[str, str] | None = None,
+        kernel_language: str = "triton",
     ):
         """
         Initialize the prompt manager.
@@ -54,11 +54,12 @@ class PromptManager:
         Args:
             templates_dir: Path to the templates directory. If None, uses default.
             target_platform: Target platform PlatformConfig
-            kernel_backend: Kernel source backend to generate (triton or cutedsl)
             template_overrides: Optional dict mapping logical template names to
                 absolute file paths for custom .j2 files.  Only the optimization
                 templates (kernel_optimization, reflexion_prompt, guidelines)
                 can be overridden; other keys are ignored.
+            kernel_language: Kernel DSL ("triton" or "cutedsl"). Selects which
+                guidelines template is rendered for generation/optimization prompts.
         """
         if not JINJA2_AVAILABLE:
             raise ImportError(
@@ -68,7 +69,7 @@ class PromptManager:
         if target_platform is None:
             target_platform = get_platform("cuda")
         self.target_platform = target_platform
-        self.kernel_backend = get_kernel_backend(kernel_backend)
+        self.kernel_language_config = get_kernel_language_config(kernel_language)
         # Set up templates directory
         if templates_dir:
             self.templates_dir = Path(templates_dir)
@@ -106,15 +107,16 @@ class PromptManager:
         # Define template mappings (required templates)
         template_files = {
             "test_generation": "test_generation.j2",
-            "kernel_generation": self.kernel_backend.generation_template,
-            "kernel_refinement": self.kernel_backend.refinement_template,
-            "backend_guidelines": self.kernel_backend.guidelines_template,
+            "kernel_generation": self.kernel_language_config.generation_template,
+            "kernel_refinement": self.kernel_language_config.refinement_template,
+            "language_guidelines": self.kernel_language_config.guidelines_template,
             "kernel_optimization": "kernel_optimization.j2",
         }
 
         # Optional templates (loaded if present)
         optional_template_files = {
             "reflexion_prompt": "reflexion_prompt.j2",
+            "cutedsl_guidelines": "cutedsl_guidelines.j2",
         }
 
         # Load required templates
@@ -165,15 +167,15 @@ class PromptManager:
             problem_description=problem_description,
             provided_test_code=provided_test_code,
             device_string=self.target_platform.device_string,
-            kernel_backend=self.kernel_backend.name,
-            kernel_backend_display=self.kernel_backend.display_name,            
+            kernel_language=self.kernel_language_config.name,
+            kernel_language_display=self.kernel_language_config.display_name,
         )
 
     def render_kernel_generation_prompt(
         self,
         problem_description: str,
         test_code: str,
-        backend_guidelines: str | None = None,
+        language_guidelines: str | None = None,
         no_cusolver: bool = False,
     ) -> str:
         """
@@ -182,7 +184,7 @@ class PromptManager:
         Args:
             problem_description: Description of the kernel to generate
             test_code: Test code that the kernel must pass
-            backend_guidelines: Optional backend guidelines (if None, loads from template)
+            language_guidelines: Optional language guidelines (if None, loads from template)
             no_cusolver: If True, disables cuSolver library usage
 
         Returns:
@@ -190,14 +192,14 @@ class PromptManager:
         """
         template = self.templates["kernel_generation"]
 
-        # Keep the parameter name for compatibility while allowing non-Triton backends.
-        if backend_guidelines is None:
-            backend_guidelines = self.render_backend_guidelines()
+        # Keep the parameter name for compatibility while allowing non-Triton languages.
+        if language_guidelines is None:
+            language_guidelines = self.render_language_guidelines()
 
         return template.render(
             problem_description=problem_description,
             test_code=test_code,
-            backend_guidelines=backend_guidelines,
+            language_guidelines=language_guidelines,
             kernel_guidance=self.target_platform.kernel_guidance,
             no_cusolver=no_cusolver,
         )
@@ -209,7 +211,7 @@ class PromptManager:
         kernel_code: str,
         error_info: dict[str, str],
         history_context: str | None = None,
-        backend_guidelines: str | None = None,
+        language_guidelines: str | None = None,
         no_cusolver: bool = False,
     ) -> str:
         """
@@ -221,7 +223,7 @@ class PromptManager:
             kernel_code: Current kernel implementation
             error_info: Dictionary with error information (stdout, stderr)
             history_context: Optional context from previous attempts
-            backend_guidelines: Optional backend guidelines (if None, loads from template)
+            language_guidelines: Optional kernel language guidelines (if None, loads from template)
             no_cusolver: If True, disables cuSolver library usage
 
         Returns:
@@ -229,9 +231,9 @@ class PromptManager:
         """
         template = self.templates["kernel_refinement"]
 
-        # Keep the parameter name for compatibility while allowing non-Triton backends.
-        if backend_guidelines is None:
-            backend_guidelines = self.render_backend_guidelines()
+        # Keep the parameter name for compatibility while allowing non-Triton languages.
+        if language_guidelines is None:
+            language_guidelines = self.render_language_guidelines()
 
         return template.render(
             problem_description=problem_description,
@@ -239,7 +241,7 @@ class PromptManager:
             kernel_code=kernel_code,
             error_info=error_info,
             history_context=history_context,
-            backend_guidelines=backend_guidelines,
+            language_guidelines=language_guidelines,
             kernel_guidance=self.target_platform.kernel_guidance,
             no_cusolver=no_cusolver,
         )
@@ -261,6 +263,7 @@ class PromptManager:
         recent_attempts: list | None = None,
         reflexions: list | None = None,
         rag_context: str | None = None,
+        grid_analysis: dict | None = None,
     ) -> str:
         """
         Render the kernel optimization prompt.
@@ -309,6 +312,9 @@ class PromptManager:
             recent_attempts=recent_attempts,
             reflexions=reflexions,
             rag_context=rag_context,
+            grid_analysis=grid_analysis,
+            kernel_language=self.kernel_language_config.name,
+            guidelines=self.render_language_guidelines(),
         )
 
     def render_reflexion_prompt(self, attempt) -> str:
@@ -363,14 +369,14 @@ Respond with JSON containing:
     "try_patterns": ["pattern to try next"]
 }}"""
 
-    def render_backend_guidelines(self) -> str:
+    def render_language_guidelines(self) -> str:
         """
-        Render guidelines for the selected kernel backend.
+        Render guidelines for the selected kernel language.
 
         Returns:
             Rendered guidelines string
         """
-        template = self.templates["backend_guidelines"]
+        template = self.templates["language_guidelines"]
         return template.render()
 
     def get_template(self, template_name: str) -> Template:

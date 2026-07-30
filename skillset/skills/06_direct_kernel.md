@@ -13,7 +13,7 @@ Replaces `AutoKernelRouter._solve_with_kernelagent()`.
 ## Inputs
 - `PROBLEM_PATH` or `PROBLEM_DESCRIPTION`: Path to problem file OR text description
 - `TARGET_PLATFORM`: `cuda` or `xpu` (default: `cuda`)
-- `KERNEL_BACKEND`: `triton` (default), `tilelang`, or `cutedsl`
+- `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 - `MAX_ROUNDS`: Maximum refinement rounds (default: 10)
 - `TEST_CODE` (optional): User-provided test code
 
@@ -54,11 +54,11 @@ Save to `$WORKDIR/test_kernel.py`.
 
 ### Step 4: Generate Initial Kernel
 
-Following the kernel generation guidelines from skill `03_generate_kernel.md` with `KERNEL_BACKEND`:
+Following the kernel generation guidelines from skill `03_generate_kernel.md` with `KERNEL_LANGUAGE`:
 
-1. Read the backend guidelines (via `render_template.py --template backend_guidelines --vars '{"kernel_backend": "$KERNEL_BACKEND"}'`)
-2. Generate a complete kernel with the backend-appropriate structure and a `kernel_function` wrapper
-3. All computation must use the chosen backend's primitives (no PyTorch math ops)
+1. Read the language guidelines (via `render_template.py --template language_guidelines --vars '{"kernel_language": "$KERNEL_LANGUAGE"}'`)
+2. Generate a complete kernel with the language-appropriate structure and a `kernel_function` wrapper
+3. All computation must use the chosen language's primitives (no PyTorch math ops)
 4. Attempt to fuse all operations into a single kernel when feasible
 
 Save to `$WORKDIR/kernel.py`.
@@ -69,7 +69,7 @@ Execute skill `04_refine_kernel.md` with:
 - `KERNEL_PATH`: `$WORKDIR/kernel.py`
 - `TEST_PATH`: `$WORKDIR/test_kernel.py`
 - `PROBLEM_DESCRIPTION`: The problem description
-- `KERNEL_BACKEND`: `$KERNEL_BACKEND`
+- `KERNEL_LANGUAGE`: `$KERNEL_LANGUAGE`
 - `MAX_ROUNDS`: `$MAX_ROUNDS`
 - `WORKDIR`: `$WORKDIR`
 
@@ -98,7 +98,7 @@ If all rounds are exhausted without success:
 
 ## Example Usage
 
-For a simple problem like ReLU with `KERNEL_BACKEND=triton`:
+For a simple problem like ReLU with `KERNEL_LANGUAGE=triton`:
 ```
 Problem: Implement ReLU over a contiguous 1D tensor of length 1024
 ```
@@ -127,5 +127,5 @@ def kernel_function(x):
     return output
 ```
 
-For `KERNEL_BACKEND=tilelang` or `KERNEL_BACKEND=cutedsl`, the structure will differ —
-refer to the backend guidelines rendered in Step 4 for the exact skeleton to follow.
+For `KERNEL_LANGUAGE=tilelang` or `KERNEL_LANGUAGE=cutedsl`, the structure will differ —
+refer to the language guidelines rendered in Step 4 for the exact skeleton to follow.

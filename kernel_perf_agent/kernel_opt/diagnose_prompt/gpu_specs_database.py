@@ -147,6 +147,22 @@ _GPU_SPECS_DATABASE: dict[str, dict[str, object]] = {
         "form_factor": "PCIe",
         "tdp_w": 400,
     },
+    "NVIDIA H200 SXM 141GB": {
+        "name": "NVIDIA H200 SXM 141GB",
+        "architecture": "Hopper",
+        "peak_fp32_tflops": 67.0,
+        "peak_fp16_tflops": 989.5,   # Without sparsity (1979 with sparsity)
+        "peak_bf16_tflops": 989.5,   # Without sparsity (1979 with sparsity)
+        "peak_memory_bw_gbps": 4800,
+        "sm_count": 132,
+        "max_threads_per_sm": 2048,
+        "l1_cache_kb": 256,
+        "l2_cache_mb": 50,
+        "memory_gb": 141,
+        "memory_type": "HBM3e",
+        "form_factor": "SXM",
+        "tdp_w": 700,
+    },
     # NVIDIA RTX 4090
     "NVIDIA RTX 4090": {
         "name": "NVIDIA RTX 4090",

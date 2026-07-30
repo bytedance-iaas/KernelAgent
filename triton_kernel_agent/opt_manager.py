@@ -33,6 +33,7 @@ Example:
     ... )
 """
 
+import difflib
 import logging
 import multiprocessing as mp
 import tempfile
@@ -59,6 +60,62 @@ from utils.config_injectable import config_injectable
 
 # Manager-level component keys resolved by the registry
 _MANAGER_LEVEL_KEYS = {"verifier", "benchmarker", "worker_runner"}
+
+
+def print_metrics(label: str, metrics: dict[str, Any]) -> None:
+    """Print a labeled metrics block to stdout."""
+    print(f"\n{label}")
+    print("-" * 60)
+    for key, value in metrics.items():
+        print(f"  {key:<32} {value}")
+
+
+def _kernel_diff_lines(old_code: str, new_code: str, max_lines: int = 20) -> list[str]:
+    """Return a compact list of changed lines between two kernel codes.
+
+    Only +/- lines are returned (no @@ hunks, no context lines).
+    Blank-only changes are suppressed.  At most max_lines entries.
+    """
+    old_lines = old_code.splitlines(keepends=True)
+    new_lines = new_code.splitlines(keepends=True)
+    diff = difflib.unified_diff(old_lines, new_lines, lineterm="")
+    result = []
+    for line in diff:
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith(("+", "-")) and line[1:].strip():
+            result.append(line.rstrip())
+            if len(result) >= max_lines:
+                result.append(f"  ... (diff truncated at {max_lines} lines)")
+                break
+    return result
+
+
+# NCU metrics to surface in the round results table, in display order.
+# Each entry: (label_suffix, ncu_key, format_fn)
+_NCU_DISPLAY: list[tuple[str, str, Any]] = [
+    ("DRAM throughput",  "dram__throughput.avg.pct_of_peak_sustained_elapsed",              lambda v: f"{v:.1f}%"),
+    ("DRAM BW",          "dram__bytes.sum.per_second",                                      lambda v: f"{v/1e9:.1f} GB/s"),
+    ("Warp active",      "sm__warps_active.avg.pct_of_peak_sustained_active",               lambda v: f"{v:.1f}%"),
+    ("Grid X",           "launch__grid_dim_x",                                              lambda v: f"{int(v)}"),
+    ("Block X",          "launch__block_dim_x",                                             lambda v: f"{int(v)}"),
+    ("Blocks/SM",        "launch__blocks_per_multiprocessor",                               lambda v: f"{v:.2f}"),
+    ("L1 hit rate",      "l1tex__t_sector_hit_rate.pct",                                    lambda v: f"{v:.1f}%"),
+    ("L2 hit rate",      "lts__t_sector_hit_rate.pct",                                      lambda v: f"{v:.1f}%"),
+    ("Mem coalescing",   "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",   lambda v: f"{v:.1f}%"),
+    ("Long SB stalls",   "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",    lambda v: f"{v:.1f}%"),
+]
+
+
+def _add_ncu_submetrics(metrics: dict[str, Any], prefix: str, ncu: dict[str, Any]) -> None:
+    """Append NCU profiler sub-rows into a print_metrics dict under the given prefix."""
+    for label, key, fmt in _NCU_DISPLAY:
+        val = ncu.get(key)
+        if val is not None:
+            try:
+                metrics[f"{prefix} {label}"] = fmt(float(val))
+            except (TypeError, ValueError):
+                pass
 
 
 @config_injectable
@@ -88,6 +145,7 @@ class OptimizationManager:
         high_reasoning_effort: bool = True,
         bottleneck_override: str | None = None,
         platform: dict[str, str] | str | None = None,
+        kernel_language: str = "triton",
         **worker_kwargs: Any,
     ):
         """Initialize the optimization manager.
@@ -106,6 +164,8 @@ class OptimizationManager:
                 - ``None`` — use ``"nvidia"`` for all components (default)
                 - a string like ``"nvidia"`` — shorthand for all components
                 - a dict like ``{"verifier": "nvidia", ...}`` — per-component
+            kernel_language: Kernel DSL ("triton" or "cutedsl"). Controls
+                benchmarking backend, LLM guidelines, and config extraction.
             **worker_kwargs: Additional kwargs passed to OptimizationWorker
         """
         self.max_rounds = max_rounds
@@ -117,6 +177,9 @@ class OptimizationManager:
         self.openai_model = openai_model
         self.high_reasoning_effort = high_reasoning_effort
         self.bottleneck_override = bottleneck_override
+        self.kernel_language = kernel_language
+        # Ensure kernel_language flows to workers via worker_kwargs
+        worker_kwargs.setdefault("kernel_language", kernel_language)
         self.worker_kwargs = worker_kwargs
 
         # Store template overrides (also stays in worker_kwargs for forwarding)
@@ -205,6 +268,7 @@ class OptimizationManager:
             high_reasoning_effort=self.high_reasoning_effort,
             bottleneck_override=self.bottleneck_override,
             worker_kwargs=self.worker_kwargs,
+            kernel_language=self.kernel_language,
         )
         self.verifier = components["verifier"]
         self.benchmarker = components["benchmarker"]
@@ -344,7 +408,26 @@ class OptimizationManager:
             initial_kernel, problem_file
         )
 
+        def _fmt(t: float) -> str:
+            return f"{t:.4f} ms" if t != float("inf") else "N/A"
+
+        def _speedup(ref: float, t: float) -> str:
+            if ref == float("inf") or t == float("inf") or t == 0:
+                return "N/A"
+            return f"{ref / t:.2f}x"
+
+        baselines: dict[str, Any] = {"PyTorch eager": _fmt(pytorch_baseline)}
+        if pytorch_compile_time != float("inf"):
+            baselines["torch.compile"] = (
+                f"{_fmt(pytorch_compile_time)}  ({_speedup(pytorch_baseline, pytorch_compile_time)} vs eager)"
+            )
+        baselines["Initial kernel"] = (
+            f"{_fmt(initial_kernel_time)}  ({_speedup(pytorch_baseline, initial_kernel_time)} vs eager)"
+        )
+        print_metrics("Baselines", baselines)
+
         # Round loop
+        baseline_ncu_printed = False
         round_num = 0
         for round_num in range(1, max_rounds + 1):
             self.logger.info("")
@@ -368,8 +451,76 @@ class OptimizationManager:
             # 3. Update strategy with results
             self.strategy.update_with_results(results, round_num)
 
-            # Log per-round winner summary
+            # Print per-round results table
             successful = [r for r in results if r.get("success")]
+            failed = [r for r in results if not r.get("success")]
+            round_metrics: dict[str, Any] = {}
+            for r in sorted(successful, key=lambda r: r.get("time_ms", float("inf"))):
+                wid = r.get("worker_id", "?")
+                t = r.get("time_ms", float("inf"))
+                round_metrics[f"Worker {wid}"] = (
+                    f"{_fmt(t)}  (vs PyTorch: {_speedup(pytorch_baseline, t)}"
+                    f",  vs initial: {_speedup(initial_kernel_time, t)})"
+                )
+                attempt = r.get("attempt") or {}
+                sol = attempt.get("combined_sol_pct", 0.0)
+                comp = attempt.get("compute_sol_pct", 0.0)
+                mem = attempt.get("memory_sol_pct", 0.0)
+                if sol or comp or mem:
+                    round_metrics[f"  W{wid} SOL"] = (
+                        f"{sol:.1f}% combined  (compute: {comp:.1f}%, memory: {mem:.1f}%)"
+                    )
+                ncu = r.get("ncu_flat") or {}
+                if ncu:
+                    _add_ncu_submetrics(round_metrics, f"  W{wid}", ncu)
+            for r in failed:
+                wid = r.get("worker_id", "?")
+                attempt = r.get("attempt") or {}
+                if r.get("error"):
+                    reason = str(r["error"])[:120]
+                elif r.get("early_stop_reason"):
+                    reason = r["early_stop_reason"][:120]
+                elif attempt and not attempt.get("passed_verification", True):
+                    err = attempt.get("error_message", "").strip()
+                    reason = f"verification failed: {err[:100]}" if err else "generated kernel failed correctness check"
+                elif r.get("time_ms") == float("inf"):
+                    reason = "benchmark failed (time=inf)"
+                else:
+                    reason = "failed (no result)"
+                round_metrics[f"Worker {wid} (failed)"] = reason
+            print_metrics(f"Round {round_num}/{max_rounds} Results", round_metrics)
+
+            # Print baseline NCU metrics once (from the first worker that has them)
+            if not baseline_ncu_printed:
+                for r in results:
+                    pytorch_ncu = r.get("pytorch_ncu_flat") or {}
+                    initial_ncu = r.get("baseline_ncu_flat") or {}
+                    if pytorch_ncu or initial_ncu:
+                        baseline_ncu: dict[str, Any] = {}
+                        if pytorch_ncu:
+                            _add_ncu_submetrics(baseline_ncu, "PyTorch eager", pytorch_ncu)
+                        if initial_ncu:
+                            _add_ncu_submetrics(baseline_ncu, "Initial kernel", initial_ncu)
+                        if baseline_ncu:
+                            print_metrics("Baseline Profiling", baseline_ncu)
+                            baseline_ncu_printed = True
+                        break
+
+            # Print per-worker code diffs (parent → what the LLM actually generated)
+            for r in sorted(results, key=lambda r: r.get("worker_id", 0)):
+                wid = r.get("worker_id", "?")
+                old_code = r.get("parent_kernel_code", "")
+                new_code = r.get("generated_kernel_code") or r.get("kernel_code", "")
+                if not old_code or not new_code or old_code == new_code:
+                    continue
+                diff_lines = _kernel_diff_lines(old_code, new_code)
+                if diff_lines:
+                    status = "" if r.get("success") else " (failed)"
+                    print(f"\n  Worker {wid}{status} code changes:")
+                    for line in diff_lines:
+                        print(f"    {line}")
+
+            # Log per-round winner summary (for log file)
             if successful:
                 best = min(successful, key=lambda r: r.get("time_ms", float("inf")))
                 self.logger.info(

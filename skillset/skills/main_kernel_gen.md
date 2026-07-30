@@ -11,7 +11,7 @@ or any PyTorch module definition.
 ## Inputs
 - `PROBLEM_PATH`: Absolute path to the problem `.py` file
 - `TARGET_PLATFORM`: `cuda` (default) or `xpu`
-- `KERNEL_BACKEND`: `triton` (default), `tilelang`, or `cutedsl`
+- `KERNEL_LANGUAGE`: `triton` (default), `tilelang`, or `cutedsl`
 - `MAX_ITERS`: Maximum refinement rounds per stage (default: 5)
 - `VERIFY`: Whether to verify the final kernel (default: true)
 
@@ -41,7 +41,7 @@ Additionally, apply your own judgment by reading the problem file. Consider:
 
 #### Path A: Direct KernelAgent (`kernelagent` or `kernel_then_fuser`)
 
-Execute skill `06_direct_kernel.md` with the problem file and `KERNEL_BACKEND`.
+Execute skill `06_direct_kernel.md` with the problem file and `KERNEL_LANGUAGE`.
 
 If it fails and fallback is allowed, execute the full Fuser pipeline (Path B).
 
@@ -56,8 +56,8 @@ Execute these skills in sequence:
    Input: fused code + problem file. Output: `subgraphs.json`.
 
 3. **For each subgraph** in `subgraphs.json`:
-   - **`03_generate_kernel.md`** — Generate a kernel (pass `KERNEL_BACKEND`).
-   - **`04_refine_kernel.md`** — Test and refine until PASS (pass `KERNEL_BACKEND`).
+   - **`03_generate_kernel.md`** — Generate a kernel (pass `KERNEL_LANGUAGE`).
+   - **`04_refine_kernel.md`** — Test and refine until PASS (pass `KERNEL_LANGUAGE`).
 
 4. **`05_compose_kernels.md`** — Stitch all subgraph kernels into the final program.
    Input: problem file, subgraphs.json, kernel files. Output: `composed_kernel.py`.
