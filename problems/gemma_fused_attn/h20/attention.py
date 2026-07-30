@@ -279,6 +279,12 @@ class _AttnFn(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, attention_mask, scale):
+        # Contiguous BEFORE save_for_backward: the bwd kernels index q/k/v with
+        # contiguous arithmetic but never re-contiguise, so saving a transposed
+        # view (what eager_attention_forward is handed) silently scrambles dq/dk/dv
+        # while leaving the forward correct — _flash_forward contiguises its own
+        # copies, so only the backward sees it.
+        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         o, L = _flash_forward(q, k, v, attention_mask, scale)
         ctx.save_for_backward(q, k, v, o, L)
         ctx.attention_mask = attention_mask
