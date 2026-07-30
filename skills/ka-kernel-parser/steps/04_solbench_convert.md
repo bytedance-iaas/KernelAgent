@@ -43,8 +43,10 @@ pure-PyTorch `run(...)` and the workloads are already pinned.
    `workload_tolerance(i)` / `gpu_key()` / `workload_latency(i)`) and
    `test.py` (checks `kernel.kernel_function` over every workload with
    SOL-ExecBench's matched-ratio correctness semantics). When any
-   workload carries a `latency` object (per-GPU `{baseline, target}` in
-   ms, see `docs/PROBLEM_MD_FORMAT.md`), it also emits one pinned
+   workload carries a `latency` object (per-GPU `{baseline, target?,
+   sol?, min_score?}` in ms — `target` is a hard gate, `sol` gates via
+   the SOL-Score >= `min_score` (default 0.5 = match baseline), see
+   `docs/PROBLEM_MD_FORMAT.md`), it also emits one pinned
    `<gpu>/perf_test.py` per GPU spec — the performance goal gates
    consumed by `ka-kernel-opt`.
 

@@ -1,9 +1,9 @@
 """Auto-generated from problem.md by scripts/problem_md.py - do not edit.
 
-Performance goal gate for GPU spec 'h200' (this file lives in the
-<problem>/h200/ subfolder and is pinned to that spec). Benchmarks
+Performance goal gate for GPU spec 'b200' (this file lives in the
+<problem>/b200/ subfolder and is pinned to that spec). Benchmarks
 `kernel.kernel_function` from the PARENT problem directory on every
-workload carrying a 'h200' latency spec (ms). Per workload the
+workload carrying a 'b200' latency spec (ms). Per workload the
 pass criterion is: measured <= `target` when the spec pins a hard
 target; otherwise SOL-Score >= `min_score` (default 0.5) when it pins
 `sol`, where S = 1/(1+(t-sol)/(baseline-sol)) is 1.0 at speed-of-light
@@ -22,9 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import torch
 
 import problem
-from kernel import kernel_function
+from fp8_moe_gate_routing import kernel_function
+# from submission import kernel_function
+# from submission_final import kernel_function
 
-GPU_KEY = 'h200'
+GPU_KEY = 'b200'
 
 
 def bench_ms(fn, warmup=10, iters=50):
