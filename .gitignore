@@ -143,3 +143,4 @@ ehthumbs.db
 Thumbs.db
 # Local batch runner
 scripts/run_kernelbench_batch.py
+rsync*
