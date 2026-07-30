@@ -21,8 +21,11 @@ python scripts/problem_md.py check problems/post_norm_residual/problem.md
 python scripts/problem_md.py materialize problems/post_norm_residual/problem.md
 ```
 
-`materialize` is what the ka-kernel-* skills run when handed a `.md`
-problem: the generated `problem.py` satisfies the KernelBench contract
+Conversion is owned by the **ka-kernel-parser** skill (its "solbench
+convert" mode, `steps/04_solbench_convert.md`); `ka-kernel-gen` and
+`ka-kernel-opt` consume only the KernelBench output. `materialize`
+produces that output: the generated `problem.py` satisfies the
+KernelBench contract
 (`Model`, `get_inputs()`, `get_init_inputs()`) plus `WORKLOADS` /
 `build_workload_inputs(i)` / `workload_tolerance(i)`; the generated
 `test.py` imports `from kernel import kernel_function` and checks every
@@ -96,9 +99,34 @@ schema. The FIRST line is the canonical workload (used by
 `get_inputs()` and benchmarks); the rest are additional accuracy cases.
 
 ```jsonl
-{"uuid": "...", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}}
+{"uuid": "...", "axes": {"batch_size": 16, "seq_len": 1024}, "inputs": {"sublayer_output": {"type": "random"}, "eps": {"type": "scalar", "value": 1e-06}}, "tolerance": {"max_atol": 0.0063, "max_rtol": 0.05}, "latency": {"h200": {"baseline": 0.98, "target": 0.12}}}
 ```
 ````
+
+### Performance targets (`latency`)
+
+A workload line may carry an optional `latency` object: per-GPU
+`{"<gpu_key>": {"baseline": <ms>, "target": <ms>}}` entries (units:
+milliseconds). `gpu_key` is a case-insensitive substring of
+`torch.cuda.get_device_name()` — e.g. `"h200"`, `"b200"`, `"h100"`.
+`baseline` is what an unoptimized reference achieves; `target` is the
+optimization goal.
+
+When workloads carry `latency`, `materialize` additionally emits one
+pinned gate per GPU spec in a subfolder: `<problem>/<gpu_key>/
+perf_test.py` (e.g. `fp8_group_gemm/b200/perf_test.py`). Each gate
+imports `problem`/`kernel` from the parent problem directory,
+benchmarks `kernel.kernel_function` (median of CUDA-event timings) on
+every workload with a target for that spec, prints a per-workload table
+plus one machine-readable JSON line, and exits 0 iff every target is
+met — or 2 when run on a different GPU (pinned, never vacuous).
+`problem.py` exposes the same data via `gpu_key()` and
+`workload_latency(i)`.
+
+The perf gates are GOAL gates, not correctness gates: the
+`ka-kernel-opt` pipeline picks the subfolder matching the current GPU,
+runs it on each accepted best kernel, and stops with success when it
+passes; `test.py` alone decides correctness.
 
 ## Input generation semantics
 
