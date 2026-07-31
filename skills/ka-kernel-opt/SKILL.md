@@ -80,6 +80,16 @@ each has a graceful fallback if absent):
 - `MAX_NO_IMPROVEMENT`: greedy early-stop plateau (default 5 rounds)
 - `BOTTLENECK_OVERRIDE` (optional): force `memory`/`compute`/`underutilized`
 - `STRATEGY`: `greedy` (default) or `beam` (see Variants)
+- `LAZY_NICHE_SCAN` (optional, default `true`): at Finalize, run a
+  scripted (non-agent) post-hoc scan of every candidate the run already
+  produced — including rejected-but-correct regressions still on disk —
+  against other real workloads, and mechanically synthesize a dispatcher
+  if a safe one exists (see Variants). Requires `WORKLOADS` +
+  `build_workload_inputs`; no-ops otherwise, so it's safe to leave on
+  unconditionally, including on single-workload problems.
+- `NUM_SCAN_WORKLOADS` (optional, default 3): representative workloads
+  `steps/07_lazy_niche_scan.md` selects to scan against when
+  `LAZY_NICHE_SCAN=true`.
 
 ## Workflow (optimize mode)
 
@@ -172,6 +182,12 @@ cp <best-runtime kernel> $KERNEL_DIR/optimized_kernel.py
 python "${CLAUDE_SKILL_DIR}/tools/program_db.py" top --db $RUN_DIR/program_db.json --k 5
 ```
 
+`LAZY_NICHE_SCAN=true`: replace the copy above with
+`${CLAUDE_SKILL_DIR}/steps/07_lazy_niche_scan.md` — scan the existing
+program database (including rejected rounds) for a rescue opportunity and
+mechanically synthesize a dispatcher only if a safe one exists; otherwise
+copy the single champion as usual.
+
 Report the final result in the `run_optimization` contract, plus prose:
 
 ```json
@@ -208,6 +224,39 @@ Report the final result in the `run_optimization` contract, plus prose:
   on the given kernel and present the metrics, roofline verdict, grid
   assessment, and (diagnose) the PTX/SASS flags, root causes + recommended
   fixes — no rewrites.
+- **Lazy niche scan (`LAZY_NICHE_SCAN=true`)**: run the exact vanilla loop
+  untouched; only at Finalize, a scripted, non-agent pass
+  (`steps/07_lazy_niche_scan.md`) checks whether any already-produced
+  candidate (including rounds rejected as regressions on the canonical
+  workload, still on disk, still correct) is secretly the best choice for
+  some other real workload, and mechanically synthesizes a dispatcher —
+  but only when the WORST regret across `--repeats` (default 3)
+  independent measurement passes is below a safety threshold (1.10x);
+  otherwise it reports the finding and ships the canonical champion alone
+  rather than risk an unquantified regression. The repeat-and-take-worst
+  design is load-bearing, not defensive boilerplate: a single-pass version
+  of this gate, run live on a real shared GPU box, flipped between
+  "refuse" and "ship" on 2 of 5 identical sequential runs from ordinary
+  contention noise alone — a safety gate a single noisy sample can fool
+  isn't a safety gate. Also fixed after independent code review: the split
+  search only ever tried one label orientation, which could make it blind
+  to the correct routing rule entirely (see `docs/
+  KA_KERNEL_OPT_LAZY_NICHE_SCAN.md` §3.3 for the full list — 5 real bugs
+  found and fixed across two review passes, including this one, an
+  incomplete-benchmark-matrix gap, and a hardcoded-axis-extraction gap
+  now auto-verified before any dispatcher ships). Tested in offline replay
+  against 3 real controlled runs: 2/3 found nothing to rescue (cost: ~96
+  cheap benchmark calls per run, no change); 1/3 found a real one — **re-verified
+  after the orientation fix, achieves geomean ~1.176x with a perfect,
+  0-misclassification, 1.000x-worst-case-regret split**, matching the
+  idealized ceiling exactly (the pre-fix search only found a flawed rule
+  with 1.478x worst-case regression, understating what the mechanism can
+  actually do). Also exercised as a live, end-to-end feature (full
+  Setup→Rounds→Finalize on a real 4th problem, not just against
+  already-completed runs' saved program databases) — the pipeline and
+  dispatcher-codegen path are correct; that live run is also what
+  surfaced the noise-robustness gap the repeat-and-take-worst fix above
+  addresses. On by default.
 
 ## Ground Rules
 - NCU requires exclusive GPU access: never profile and benchmark at the same
