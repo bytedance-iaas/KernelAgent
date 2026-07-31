@@ -90,6 +90,15 @@ each has a graceful fallback if absent):
 - `NUM_SCAN_WORKLOADS` (optional, default 3): representative workloads
   `steps/07_lazy_niche_scan.md` selects to scan against when
   `LAZY_NICHE_SCAN=true`.
+- `BESTOF3` (optional, default `false`): per round, generate 3 independent
+  rewrite candidates from the same diagnosis instead of 1, verify+benchmark
+  all 3, advance only on strict improvement (see `steps/08_bestof3.md`).
+  **Opt-in, not a safe default** — real, replicated wins on 2 of 4 tested
+  problems, no reliable benefit on the other 2; read
+  `steps/08_bestof3.md`'s "When this helps, honestly" section (or
+  `insights/BEST-OF-N RESAMPLING (IDEA F) - EXPLORATION.md`) before
+  recommending it for a given problem. Costs ~1.7-2.2x a vanilla round's
+  true compute, every round it runs.
 
 ## Workflow (optimize mode)
 
@@ -139,10 +148,16 @@ Each round, in order (this mirrors
    metrics and the PTX/SASS analysis — never a single tool).
 6. **Rewrite** — `${CLAUDE_SKILL_DIR}/steps/05_rewrite.md`
    (consult `reference/` patterns; produce `kernel_candidate.py`).
+   `BESTOF3=true`: replace with `steps/08_bestof3.md` Step 1 — three
+   independent candidates from this same diagnosis instead of one.
 7. **Verify + Accept/Reject + Reflect** —
    `${CLAUDE_SKILL_DIR}/steps/06_verify_accept.md`
    (correctness with ≤3 refinements, benchmark, program-database update with
    lineage, two-track best tracking, divergence revert, reflexion).
+   `BESTOF3=true`: replace with `steps/08_bestof3.md` Step 2-3 — verify +
+   benchmark all 3 candidates, pick the fastest that passed, and apply the
+   **strict** improvement-only gate (not the 50%-divergence-tolerant rule
+   above) before advancing.
 8. **Report the round** (see Round Reporting below).
 
 Additional stop conditions checked at the end of each round:
@@ -257,6 +272,28 @@ Report the final result in the `run_optimization` contract, plus prose:
   dispatcher-codegen path are correct; that live run is also what
   surfaced the noise-robustness gap the repeat-and-take-worst fix above
   addresses. On by default.
+- **Best-of-3 resampling (`BESTOF3=true`)**: not selection between existing
+  candidates, but generating 3 independent implementations of the *same*
+  diagnosed fix each round instead of 1, verifying and benchmarking all 3,
+  and keeping the best (`steps/08_bestof3.md`). Only the rewrite step is
+  resampled; the diagnosis is one LLM call per round, same as vanilla.
+  Tested on 4 real problems, with real replicates on each (not single-run
+  comparisons) after an initial mixed result turned out to be partly a
+  harness bug (a missing divergence-reversion gate): 2 of 4 problems (GDN,
+  SOL-187) show a real, replicated win (1.14x-1.56x); the other 2
+  (`fp8_group_gemm`, MoE L2/008) show no reliable separation from vanilla
+  once genuinely replicated, and MoE L2/008's replicate leaned the other
+  way. The pattern isn't random: it helps when a round's diagnosis is
+  likely right but its *implementation* is uncertain (multiple genuinely
+  different ways to build the fix, real risk of a fragile or
+  non-compiling "obvious" choice), and it doesn't help — and can waste
+  rounds — when the problem needs a long *sequence* of distinct diagnoses,
+  since resampling only multiplies attempts within one diagnosis, it
+  can't discover the next one. See `steps/08_bestof3.md`'s "When this
+  helps, honestly" for the full reasoning and a cheap, checkable-in-advance
+  heuristic (naive kernel's launch/operation diversity). **Opt-in only —
+  do not enable by default or recommend without checking that heuristic
+  first.**
 
 ## Ground Rules
 - NCU requires exclusive GPU access: never profile and benchmark at the same
