@@ -106,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--device", default="cuda")
     p.add_argument("--output", default=None, help="Write JSON here instead of stdout")
+    p.add_argument(
+        "--workload-index", type=int, default=None,
+        help="Benchmark a specific WORKLOADS[i] instead of the canonical "
+             "get_inputs() -- requires the problem to define "
+             "build_workload_inputs(i) (unified problem.md contract). "
+             "Used by lazy niche scan.")
     args = p.parse_args(argv)
 
     result: dict
@@ -123,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "kernel" and not args.kernel:
             raise ValueError("--kernel is required for --mode kernel")
 
-        Model, get_inputs, get_init_inputs = load_problem(args.problem)
+        Model, get_inputs, get_init_inputs = load_problem(
+            args.problem, workload_index=args.workload_index)
 
         if args.dtype != "auto":
             dtype = getattr(torch, args.dtype)
@@ -172,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             "stats": stats,
             "dtype": str(dtype).replace("torch.", ""),
             "timing": timing,
+            "workload_index": args.workload_index,
         }
         exit_code = 0
     except Exception as e:  # report every failure as structured JSON

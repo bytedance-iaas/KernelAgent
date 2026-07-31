@@ -32,10 +32,40 @@ def import_module_from_path(name: str, path: str | Path):
     return module
 
 
-def load_problem(problem_path: str | Path):
-    """Return (Model, get_inputs, get_init_inputs|None) from a problem file."""
+def load_problem(problem_path: str | Path, workload_index: int | None = None):
+    """Return (Model, get_inputs, get_init_inputs|None) from a problem file.
+
+    `workload_index`: when given, the problem MUST define `WORKLOADS` +
+    `build_workload_inputs(i)` (the unified problem.md / SOL-ExecBench-style
+    contract — see docs/PROBLEM_MD_FORMAT.md); `get_inputs` is overridden to
+    build that specific workload instead of the canonical one. Used by lazy
+    niche scan: benchmarking a candidate against several representative
+    workloads, not just the round's single proxy.
+
+    Raises if `workload_index` is given but `build_workload_inputs` is
+    missing, rather than silently falling back to the canonical
+    `get_inputs` — a silent fallback here previously meant every
+    "different workload" benchmark call actually re-measured the same
+    canonical input, mislabeled as distinct workload indices, which can
+    corrupt per-workload comparisons (spurious "nothing to rescue", or
+    worse, a spurious rescue from pure re-measurement noise) without any
+    visible error.
+    """
     mod = import_module_from_path("problem", problem_path)
-    return mod.Model, mod.get_inputs, getattr(mod, "get_init_inputs", None)
+    get_inputs = mod.get_inputs
+    if workload_index is not None:
+        if not hasattr(mod, "build_workload_inputs"):
+            raise ValueError(
+                f"workload_index={workload_index} requested but "
+                f"{problem_path} has no build_workload_inputs(i) -- cannot "
+                f"honor a per-workload request without silently "
+                f"re-benchmarking the canonical input under a different "
+                f"label. Add build_workload_inputs (see "
+                f"docs/PROBLEM_MD_FORMAT.md), or don't pass "
+                f"--workload-index for this problem."
+            )
+        get_inputs = lambda: mod.build_workload_inputs(workload_index)  # noqa: E731
+    return mod.Model, get_inputs, getattr(mod, "get_init_inputs", None)
 
 
 def detect_dtype(kernel_source: str, default: str = "bfloat16") -> torch.dtype:
