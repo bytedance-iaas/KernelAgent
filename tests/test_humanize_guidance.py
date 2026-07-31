@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Verify that Humanize guidance remains repo-local and pointer-oriented."""
+"""Verify that the Humanize skill remains repo-local, pointer-oriented, and outside KernelAgent's runtime."""
 
 import re
 import subprocess
@@ -25,9 +25,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on Python 3.10
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_HUMANIZE_GUIDANCE = _REPO_ROOT / "skillset/skills/humanize.md"
-_CLAUDE_HUMANIZE_SKILL = _REPO_ROOT / ".claude/skills/humanize/SKILL.md"
-_ROOT_CLAUDE_GUIDANCE = _REPO_ROOT / "CLAUDE.md"
+_HUMANIZE_SKILL = _REPO_ROOT / "skills/humanize/SKILL.md"
+_CLAUDE_HUMANIZE_SYMLINK = _REPO_ROOT / ".claude/skills/humanize"
 
 _CANONICAL_FILES = [
     "triton_kernel_agent/templates/backend/triton/guidelines.j2",
@@ -48,7 +47,6 @@ _CANONICAL_DIRS = [
 
 _REQUIRED_GUIDANCE_PATTERNS = {
     "Humanize is described as Claude Code-compatible": r"Claude Code-compatible",
-    "Humanize has a Claude Code skill entry point": r"\.claude/skills/humanize/SKILL\.md",
     "Humanize is positioned as skill-plugin workflow support": r"skill-plugin",
     "Humanize is positioned for single-agent sessions": r"single-agent sessions",
     "Humanize supports human-in-the-loop planning/review": r"human-in-the-loop",
@@ -74,18 +72,11 @@ _SUPPORTED_HUMANIZE_WORKFLOWS = [
 ]
 
 
-def _read_guidance() -> str:
-    assert _HUMANIZE_GUIDANCE.exists(), (
-        "skillset/skills/humanize.md must exist as the authoritative guidance"
+def _read_skill() -> str:
+    assert _HUMANIZE_SKILL.exists(), (
+        "skills/humanize/SKILL.md must exist as the authoritative guidance"
     )
-    return _HUMANIZE_GUIDANCE.read_text(encoding="utf-8")
-
-
-def _read_claude_humanize_skill() -> str:
-    assert _CLAUDE_HUMANIZE_SKILL.exists(), (
-        "Claude Code must have a repo-local Humanize skill entry point"
-    )
-    return _CLAUDE_HUMANIZE_SKILL.read_text(encoding="utf-8")
+    return _HUMANIZE_SKILL.read_text(encoding="utf-8")
 
 
 def _dependency_name(dependency: str) -> str:
@@ -107,11 +98,41 @@ def _project_dependencies(pyproject_text: str) -> list[str]:
     )
     assert dependencies_match, "pyproject.toml [project] section must contain dependencies"
 
-    return [match.group(2) for match in re.finditer(r"(['\"])(.*?)\1", dependencies_match.group(1))]
+    return [
+        match.group(2)
+        for match in re.finditer(r"(['\"])(.*?)\1", dependencies_match.group(1))
+    ]
+
+
+def test_claude_code_skill_symlink_resolves_to_skills_humanize():
+    assert _CLAUDE_HUMANIZE_SYMLINK.is_symlink(), (
+        ".claude/skills/humanize must be a symlink, like the other repo skills "
+        "(ka-kernel-gen, ka-kernel-opt, ka-kernel-parser, ...)"
+    )
+    assert _CLAUDE_HUMANIZE_SYMLINK.resolve() == (_REPO_ROOT / "skills/humanize").resolve(), (
+        ".claude/skills/humanize must resolve to skills/humanize"
+    )
+    assert (_CLAUDE_HUMANIZE_SYMLINK / "SKILL.md").is_file()
+
+
+def test_humanize_skill_has_frontmatter():
+    skill = _read_skill()
+
+    assert re.search(r"(?m)^---$", skill), "Humanize skill must have frontmatter"
+    assert re.search(r"(?m)^name:\s*humanize\s*$", skill), (
+        "Humanize skill must be named humanize"
+    )
+    assert re.search(r"(?m)^allowed-tools:\s*$", skill), (
+        "Humanize skill must declare allowed tools like the existing repo skills"
+    )
+    assert re.search(r"(?m)^\s+- Bash\s*$", skill), (
+        "Humanize skill must allow Bash for Humanize runtime scripts"
+    )
+    assert "$ARGUMENTS" in skill, "Humanize skill must pass user arguments through"
 
 
 def test_humanize_guidance_references_existing_canonical_sources():
-    guidance = _read_guidance()
+    guidance = _read_skill()
 
     for relative_path in _CANONICAL_FILES:
         assert relative_path in guidance, f"humanize guidance must reference {relative_path}"
@@ -127,7 +148,7 @@ def test_humanize_guidance_references_existing_canonical_sources():
 
 
 def test_humanize_guidance_keeps_runtime_boundary_context():
-    guidance = _read_guidance()
+    guidance = _read_skill()
 
     for description, pattern in _REQUIRED_GUIDANCE_PATTERNS.items():
         assert re.search(pattern, guidance, re.IGNORECASE), (
@@ -136,7 +157,7 @@ def test_humanize_guidance_keeps_runtime_boundary_context():
 
 
 def test_humanize_guidance_documents_supported_workflows():
-    guidance = _read_guidance()
+    guidance = _read_skill()
 
     assert "Supported Humanize Workflows" in guidance
     for workflow in _SUPPORTED_HUMANIZE_WORKFLOWS:
@@ -153,36 +174,8 @@ def test_humanize_guidance_documents_supported_workflows():
     )
 
 
-def test_claude_code_humanize_skill_entrypoint_points_to_guidance():
-    skill = _read_claude_humanize_skill()
-
-    assert re.search(r"(?m)^---$", skill), "Claude Code skill must have frontmatter"
-    assert re.search(r"(?m)^name:\s*humanize\s*$", skill), (
-        "Claude Code skill must be named humanize"
-    )
-    assert re.search(r"(?m)^allowed-tools:\s*$", skill), (
-        "Claude Code skill must declare allowed tools like the existing repo skills"
-    )
-    assert re.search(r"(?m)^\s+- Bash\s*$", skill), (
-        "Claude Code Humanize skill must allow Bash for Humanize runtime scripts"
-    )
-    assert "skillset/skills/humanize.md" in skill, (
-        "Claude Code Humanize skill must point to skillset/skills/humanize.md"
-    )
-    assert "Do not proceed until you have read" in skill, (
-        "Claude Code Humanize skill must follow the repo skill wrapper pattern"
-    )
-    assert "$ARGUMENTS" in skill, "Claude Code Humanize skill must pass user arguments through"
-    assert re.search(r"fallback behavior", skill, re.IGNORECASE), (
-        "Skill must delegate runtime fallback behavior to skillset/skills/humanize.md"
-    )
-
-
-def test_humanize_skillset_files_are_not_ignored_by_git():
-    for relative_path in [
-        ".claude/skills/humanize/SKILL.md",
-        "skillset/skills/humanize.md",
-    ]:
+def test_humanize_skill_files_are_not_ignored_by_git():
+    for relative_path in ["skills/humanize/SKILL.md", ".claude/skills/humanize"]:
         result = subprocess.run(
             ["git", "check-ignore", "--quiet", relative_path],
             cwd=_REPO_ROOT,
@@ -190,20 +183,6 @@ def test_humanize_skillset_files_are_not_ignored_by_git():
         )
 
         assert result.returncode == 1, f"{relative_path} must not be ignored by git"
-
-
-def test_root_claude_guidance_is_absent_and_ignored_for_local_overrides():
-    assert not _ROOT_CLAUDE_GUIDANCE.exists(), (
-        "root CLAUDE.md should not be committed because it can affect local agent settings"
-    )
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--no-index", "--quiet", "CLAUDE.md"],
-        cwd=_REPO_ROOT,
-        check=False,
-    )
-
-    assert result.returncode == 0, "root CLAUDE.md should remain ignored for local overrides"
 
 
 def test_humanize_is_not_a_runtime_dependency():
