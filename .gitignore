@@ -144,3 +144,4 @@ Thumbs.db
 scripts/run_kernelbench_batch.py
 rsync*
 .optimize
+.kernel_agent_service/
