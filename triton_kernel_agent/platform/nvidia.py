@@ -486,6 +486,10 @@ class NvidiaRooflineAnalyzer(RooflineAnalyzerBase):
             self._delegate = RooflineAnalyzer(**kwargs)
         return self._delegate
 
+    @property
+    def config(self) -> Any:
+        return self._get_delegate().config
+
     def analyze(self, ncu_metrics: dict[str, Any]) -> Any:
         return self._get_delegate().analyze(ncu_metrics)
 
