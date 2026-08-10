@@ -1037,9 +1037,17 @@ def kernel_function(*inputs):
         self.logger.info(f"[{round_num}] Generating optimized kernel...")
         try:
             messages = [{"role": "user", "content": opt_prompt}]
+            verification_provider = self.verification_worker.provider
+            max_tokens = (
+                verification_provider.get_max_tokens_limit(
+                    self.verification_worker.openai_model
+                )
+                if verification_provider
+                else 24576
+            )
             response_text = self.verification_worker._call_llm(
                 messages,
-                max_tokens=24576,
+                max_tokens=max_tokens,
             )
 
             # Save response
@@ -1131,10 +1139,15 @@ def kernel_function(*inputs):
             messages = [{"role": "user", "content": reflexion_prompt}]
             # Use provider directly with high_reasoning_effort=False
             # (worker._call_llm would force high_reasoning=True if worker was configured that way)
+            max_tokens = (
+                self.provider.get_max_tokens_limit(self.model)
+                if self.provider
+                else 2048
+            )
             response = self.provider.get_response(
                 self.model,
                 messages,
-                max_tokens=2048,
+                max_tokens=max_tokens,
             )
             response_text = response.content
 

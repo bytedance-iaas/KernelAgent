@@ -435,7 +435,12 @@ class VerificationWorker:
 
                 # Call LLM API
                 messages = [{"role": "user", "content": prompt}]
-                response_text = self._call_llm(messages, max_tokens=20000)
+                max_tokens = (
+                    self.provider.get_max_tokens_limit(self.openai_model)
+                    if self.provider
+                    else 20000
+                )
+                response_text = self._call_llm(messages, max_tokens=max_tokens)
 
                 # Extract refined kernel from response
                 refined_kernel = self._extract_code_from_response(
