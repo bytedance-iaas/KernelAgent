@@ -55,6 +55,10 @@ def select_target_metrics(data: dict, kernel_name: str | None = None) -> tuple[s
     Accepts profile_ncu.py output ({"kernels": {...}}), a name-keyed dict,
     or an already-flat {metric: value} dict. PyTorch-internal kernels
     (``at::*``) are filtered out unless they are the only ones present.
+    Among the remaining candidates, the most expensive one by
+    sm__cycles_active.avg is picked (falling back to launch order if no
+    candidate has a usable cycle count) — the bottleneck kernel isn't
+    necessarily the first one launched.
     """
     if "kernels" in data and isinstance(data["kernels"], dict):
         kernels = data["kernels"]
@@ -75,7 +79,13 @@ def select_target_metrics(data: dict, kernel_name: str | None = None) -> tuple[s
         if not n.startswith("at::") and not n.startswith("void at::")
     }
     pool = non_torch or kernels
-    name = next(iter(pool))
+
+    scored = [
+        (n, m.get("sm__cycles_active.avg"))
+        for n, m in pool.items()
+        if isinstance(m.get("sm__cycles_active.avg"), (int, float))
+    ]
+    name = max(scored, key=lambda item: item[1])[0] if scored else next(iter(pool))
     return name, pool[name]
 
 
