@@ -128,12 +128,17 @@ class BottleneckAnalyzer:
             num_fixes=self.num_fixes,
         )
 
+        max_tokens = (
+            self.provider.get_max_tokens_limit(self.model)
+            if self.provider
+            else 16384
+        )
         response = _call_llm(
             provider=self.provider,
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             logger=self.logger,
-            max_tokens=16384,
+            max_tokens=max_tokens,
         )
 
         if self.enable_debug and self.logs_dir:
