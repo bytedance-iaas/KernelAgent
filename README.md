@@ -302,6 +302,28 @@ It includes selected L1 problems with:
 - Follow the contribution guidelines in `CONTRIBUTING.md`
 - KernelAgent intentionally leaves Triton installation to the user so you can pin the version that matches your GPU driver/toolchain
 
+## Single-Node Task Service
+
+The repository includes an experimental asynchronous HTTP service that queues
+skill-driven Claude Code tasks and assigns one task at a time to each configured
+GPU. It uses FastAPI, an in-process `asyncio.Queue`, per-task filesystem
+persistence, and a `claude -p` subprocess configured for an Anthropic
+Messages-compatible model endpoint such as an internal SGLang deployment.
+Its submission API accepts a KernelBench-style PyTorch reference and generates
+a verified, performance-refined Triton or CuTe DSL kernel.
+
+```bash
+export KERNEL_AGENT_GPU_IDS=0
+export KERNEL_AGENT_MODEL_BASE_URL=http://127.0.0.1:30000
+export KERNEL_AGENT_MODEL=my-model
+python -m kernelagent_service
+```
+
+See [`docs/TASK_SERVICE.md`](docs/TASK_SERVICE.md) for the API, configuration,
+recovery behavior, and deployment security boundary. The in-memory queue
+requires exactly one API process; use a persistent shared queue before scaling
+to multiple processes or machines.
+
 ## Documentation & Community
 
 - Optimization pipeline docs: see [Kernel Optimization Pipeline](#kernel-optimization-pipeline) above

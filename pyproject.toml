@@ -28,18 +28,22 @@ classifiers = [
 dependencies = [
     "openai",
     "anthropic",
+    "fastapi>=0.110",
     "jinja2",
     "python-dotenv",
     "gradio>=5.5.0",
     "requests",
     "numpy",
     "omegaconf",
+    "pydantic>=2.5",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov",
+    "httpx>=0.27",
     "flashinfer-python",
     "flashinfer-cubin",
     "flashinfer-jit-cache"
@@ -51,6 +55,7 @@ kernel-agent = "scripts.triton_ui:main"
 list-models = "scripts.list_models:main"
 optimization-ui = "scripts.optimization_ui:main"
 pipeline-ui = "scripts.pipeline_ui:main"
+kernel-agent-service = "kernelagent_service.__main__:main"
 
 [project.urls]
 "Homepage" = "https://github.com/pytorch-labs/KernelAgent"
@@ -58,7 +63,7 @@ pipeline-ui = "scripts.pipeline_ui:main"
 "Repository" = "https://github.com/pytorch-labs/KernelAgent"
 
 [tool.setuptools.packages.find]
-include = ["triton_kernel_agent*", "kernel_perf_agent*", "Fuser*", "scripts", "utils"]
+include = ["triton_kernel_agent*", "kernel_perf_agent*", "kernelagent_service*", "Fuser*", "scripts", "utils"]
 
 [tool.setuptools]
 include-package-data = true

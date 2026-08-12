@@ -1,0 +1,393 @@
+"""Tests for the single-process task service without a GPU or model server."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from pathlib import Path
+
+import httpx
+
+from kernelagent_service.app import create_app
+from kernelagent_service.config import ServiceSettings
+from kernelagent_service.models import CreateTaskRequest, TaskRecord, TaskStatus
+from kernelagent_service.runner import ClaudeCodeRunner, RunnerResult, build_skill_prompt
+from kernelagent_service.storage import TaskStore
+
+
+PYTORCH_CODE = """\
+import torch
+from torch import nn
+
+
+class Model(nn.Module):
+    def forward(self, x):
+        return torch.relu(x)
+
+
+def get_inputs():
+    return [torch.randn(1024, device="cuda")]
+
+
+def get_init_inputs():
+    return []
+"""
+
+
+class FakeRunner:
+    def __init__(self, delay: float = 0.02) -> None:
+        self.delay = delay
+        self.running = 0
+        self.max_running = 0
+        self.calls: list[tuple[str, str]] = []
+        self.requests: list[CreateTaskRequest] = []
+        self.canceled: set[str] = set()
+
+    async def run(self, **kwargs) -> RunnerResult:
+        task_id = kwargs["task_id"]
+        gpu_id = kwargs["gpu_id"]
+        workspace = kwargs["workspace"]
+        self.calls.append((task_id, gpu_id))
+        self.requests.append(kwargs["request"])
+        self.running += 1
+        self.max_running = max(self.max_running, self.running)
+        try:
+            await kwargs["on_event"]({"type": "assistant", "message": "working"})
+            await asyncio.sleep(self.delay)
+            output = workspace / "output"
+            output.mkdir(exist_ok=True)
+            (output / "kernel.py").write_text("def kernel_function(): pass\n", encoding="utf-8")
+            return RunnerResult(
+                success=True,
+                exit_code=0,
+                output={"success": True, "summary": "done", "skill": "fake"},
+            )
+        finally:
+            self.running -= 1
+
+    async def cancel(self, task_id: str) -> bool:
+        self.canceled.add(task_id)
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
+class InputArtifactRunner(FakeRunner):
+    async def run(self, **kwargs) -> RunnerResult:
+        workspace = kwargs["workspace"]
+        (workspace / "input" / "optimized_kernel.py").write_text(
+            "def kernel_function(): pass\n", encoding="utf-8"
+        )
+        return RunnerResult(
+            success=True,
+            exit_code=0,
+            output={"success": True, "summary": "optimized", "skill": "fake"},
+        )
+
+
+def make_settings(tmp_path: Path, gpu_ids: tuple[str, ...] = ("GPU-test",)) -> ServiceSettings:
+    repo_root = Path(__file__).resolve().parent.parent
+    return ServiceSettings(
+        repo_root=repo_root,
+        runs_dir=tmp_path / "runs",
+        skills_dir=repo_root / ".claude" / "skills",
+        gpu_ids=gpu_ids,
+        queue_capacity=10,
+        default_timeout_seconds=30,
+    )
+
+
+async def submit(
+    client: httpx.AsyncClient,
+    label: str = "test",
+    kernel_language: str = "triton",
+) -> str:
+    response = await client.post(
+        "/v1/tasks",
+        json={
+            "pytorch_code": f"{PYTORCH_CODE}\n# {label}\n",
+            "kernel_language": kernel_language,
+        },
+    )
+    assert response.status_code == 202, response.text
+    return response.json()["task_id"]
+
+
+async def wait_for_terminal(
+    client: httpx.AsyncClient, task_id: str, timeout: float = 3
+) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        payload = (await client.get(f"/v1/tasks/{task_id}")).json()
+        if payload["status"] in {"succeeded", "failed", "canceled", "timed_out", "lost"}:
+            return payload
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"task {task_id} did not finish")
+
+
+def test_submit_run_query_and_download_artifact(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner()
+        app = create_app(make_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                task_id = await submit(client)
+                task = await wait_for_terminal(client, task_id)
+
+                assert task["status"] == "succeeded"
+                assert task["gpu_id"] == "GPU-test"
+                assert task["result"]["output"]["summary"] == "done"
+                assert task["event_count"] == 1
+                assert len(task["artifacts"]) == 1
+                assert runner.requests[0].entrypoint == "problem.py"
+                assert runner.requests[0].options.kernel_language == "triton"
+                assert runner.requests[0].files[0].content.startswith("import torch")
+
+                events = (await client.get(f"/v1/tasks/{task_id}/events")).json()
+                assert events[0]["type"] == "assistant"
+
+                artifact = task["artifacts"][0]
+                download = await client.get(
+                    f"/v1/tasks/{task_id}/artifacts/{artifact['id']}"
+                )
+                assert download.status_code == 200
+                assert b"kernel_function" in download.content
+
+    asyncio.run(scenario())
+
+
+def test_one_worker_serializes_tasks_on_one_gpu(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner(delay=0.08)
+        app = create_app(make_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                first = await submit(client, "first")
+                second = await submit(client, "second")
+                assert (await wait_for_terminal(client, first))["status"] == "succeeded"
+                assert (await wait_for_terminal(client, second))["status"] == "succeeded"
+        assert runner.max_running == 1
+        assert [gpu for _, gpu in runner.calls] == ["GPU-test", "GPU-test"]
+
+    asyncio.run(scenario())
+
+
+def test_list_tasks_filters_status_and_paginates(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner(delay=0.15)
+        app = create_app(make_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                first = await submit(client, "first")
+                for _ in range(50):
+                    if (await client.get(f"/v1/tasks/{first}")).json()["status"] == "running":
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    raise AssertionError("first task did not start")
+                second = await submit(client, "second")
+                await client.post(f"/v1/tasks/{second}/cancel")
+
+                canceled = (
+                    await client.get("/v1/tasks", params={"status": "canceled"})
+                ).json()
+                assert [task["id"] for task in canceled] == [second]
+
+                active_and_canceled = (
+                    await client.get(
+                        "/v1/tasks",
+                        params=[("status", "running"), ("status", "canceled")],
+                    )
+                ).json()
+                assert {task["id"] for task in active_and_canceled} == {first, second}
+
+                page = (
+                    await client.get("/v1/tasks", params={"offset": 1, "limit": 1})
+                ).json()
+                assert len(page) == 1
+                assert page[0]["id"] == first
+
+    asyncio.run(scenario())
+
+
+def test_cancel_queued_task_is_skipped(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner(delay=0.15)
+        app = create_app(make_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                first = await submit(client, "first")
+                second = await submit(client, "second")
+                canceled = await client.post(f"/v1/tasks/{second}/cancel")
+                assert canceled.status_code == 200
+                assert canceled.json()["status"] == "canceled"
+                assert (await wait_for_terminal(client, first))["status"] == "succeeded"
+                assert (await wait_for_terminal(client, second))["status"] == "canceled"
+        assert [task_id for task_id, _ in runner.calls] == [first]
+
+    asyncio.run(scenario())
+
+
+def test_rejects_invalid_pytorch_problem_and_missing_gpu(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner()
+        app = create_app(make_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                invalid = await client.post(
+                    "/v1/tasks",
+                    json={"pytorch_code": "def forward(:\n    pass"},
+                )
+                assert invalid.status_code == 422
+
+                missing_contract = await client.post(
+                    "/v1/tasks",
+                    json={"pytorch_code": "import torch\ndef kernel(x): return x"},
+                )
+                assert missing_contract.status_code == 422
+
+                unsupported_language = await client.post(
+                    "/v1/tasks",
+                    json={"pytorch_code": PYTORCH_CODE, "kernel_language": "tilelang"},
+                )
+                assert unsupported_language.status_code == 422
+
+        no_gpu_app = create_app(make_settings(tmp_path / "none", ()), runner)
+        async with no_gpu_app.router.lifespan_context(no_gpu_app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=no_gpu_app), base_url="http://testserver"
+            ) as client:
+                assert (await client.get("/healthz")).json()["status"] == "degraded"
+                unavailable = await client.post(
+                    "/v1/tasks",
+                    json={"pytorch_code": PYTORCH_CODE},
+                )
+                assert unavailable.status_code == 503
+
+    asyncio.run(scenario())
+
+
+def test_generated_files_beside_inputs_are_artifacts(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), InputArtifactRunner())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                response = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "pytorch_code": PYTORCH_CODE,
+                        "kernel_language": "cutedsl",
+                    },
+                )
+                task = await wait_for_terminal(client, response.json()["task_id"])
+
+        paths = {artifact["relative_path"] for artifact in task["artifacts"]}
+        assert "input/optimized_kernel.py" in paths
+        assert "input/problem.py" not in paths
+
+    asyncio.run(scenario())
+
+
+def test_restart_recovers_queued_and_marks_running_lost(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, ())
+    store = TaskStore(
+        settings.runs_dir,
+        settings.skills_dir,
+        max_artifact_bytes=settings.max_artifact_bytes,
+        max_artifacts=settings.max_artifacts,
+    )
+    request = CreateTaskRequest(operation="generate", problem="vector addition")
+    store.create(TaskRecord(id="queued-task", operation="generate"), request)
+    store.create(
+        TaskRecord(
+            id="running-task",
+            operation="generate",
+            status=TaskStatus.RUNNING,
+        ),
+        request,
+    )
+
+    async def scenario() -> None:
+        app = create_app(settings, FakeRunner())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                queued = (await client.get("/v1/tasks/queued-task")).json()
+                lost = (await client.get("/v1/tasks/running-task")).json()
+                assert queued["status"] == "queued"
+                assert lost["status"] == "lost"
+                assert "restarted" in lost["error"]
+
+    asyncio.run(scenario())
+
+
+def test_prompt_routes_operations_to_explicit_skills() -> None:
+    parse = CreateTaskRequest(
+        operation="parse",
+        entrypoint="kernel.py",
+        files=[{"path": "kernel.py", "content": "# kernel"}],
+    )
+    optimize = CreateTaskRequest(
+        operation="optimize",
+        files=[
+            {"path": "input.py", "content": "# kernel"},
+            {"path": "problem.py", "content": "# problem"},
+            {"path": "test.py", "content": "# test"},
+        ],
+    )
+    assert build_skill_prompt(parse).startswith("/ka-kernel-parser input/kernel.py")
+    assert build_skill_prompt(optimize).startswith("/ka-kernel-opt input")
+
+
+def test_runner_rejects_claude_error_result_with_zero_exit(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-claude"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'error_max_turns', "
+        "'is_error': True, 'result': 'turn limit'}))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".claude-runtime").mkdir()
+    settings = replace(make_settings(tmp_path), claude_command=str(executable))
+    runner = ClaudeCodeRunner(settings)
+
+    async def _append(target: list[dict], item: dict) -> None:
+        target.append(item)
+
+    async def _ignore(_: str) -> None:
+        return None
+
+    async def scenario() -> RunnerResult:
+        events: list[dict] = []
+        return await runner.run(
+            task_id="runner-error",
+            request=CreateTaskRequest(problem="test"),
+            workspace=workspace,
+            gpu_id="GPU-test",
+            timeout_seconds=5,
+            on_event=lambda event: _append(events, event),
+            on_stderr=lambda text: _ignore(text),
+        )
+
+    result = asyncio.run(scenario())
+    assert result.success is False
+    assert result.exit_code == 0
+    assert result.error == "turn limit"
