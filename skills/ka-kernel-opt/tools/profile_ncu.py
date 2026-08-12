@@ -24,7 +24,7 @@ Usage:
 
 Output (JSON, also written to --out):
     {"kernels": {"<name>": {"<metric>": value, ...}},
-     "target_kernel": "<first non-PyTorch kernel>",
+     "target_kernel": "<most expensive non-PyTorch kernel>",
      "csv_path": "..."}
 
 Notes:
@@ -279,11 +279,30 @@ def _is_number(s: str) -> bool:
 
 
 def pick_target_kernel(kernels: dict[str, dict]) -> str | None:
-    """First kernel that is not a PyTorch internal (at::*)."""
-    for name in kernels:
-        if not name.startswith("at::") and not name.startswith("void at::"):
-            return name
-    return next(iter(kernels), None)
+    """Most expensive non-PyTorch-internal (at::*) kernel.
+
+    Ranked by sm__cycles_active.avg (the actual bottleneck may not be the
+    first-launched kernel when a problem launches multiple sub-kernels per
+    call). Falls back to launch order when no candidate has a usable cycle
+    count.
+    """
+    candidates = [
+        name
+        for name in kernels
+        if not name.startswith("at::") and not name.startswith("void at::")
+    ]
+    if not candidates:
+        return next(iter(kernels), None)
+
+    scored = [
+        (name, kernels[name].get("sm__cycles_active.avg"))
+        for name in candidates
+    ]
+    scored = [(name, cycles) for name, cycles in scored if isinstance(cycles, (int, float))]
+    if scored:
+        return max(scored, key=lambda item: item[1])[0]
+
+    return candidates[0]
 
 
 def main(argv: list[str] | None = None) -> int:
