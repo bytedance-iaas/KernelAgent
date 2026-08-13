@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,7 +12,12 @@ import httpx
 from kernelagent_service.app import create_app
 from kernelagent_service.config import ServiceSettings
 from kernelagent_service.models import CreateTaskRequest, TaskRecord, TaskStatus
-from kernelagent_service.runner import ClaudeCodeRunner, RunnerResult, build_skill_prompt
+from kernelagent_service.runner import (
+    ClaudeCodeRunner,
+    PiRunner,
+    RunnerResult,
+    build_skill_prompt,
+)
 from kernelagent_service.storage import TaskStore
 
 
@@ -83,6 +89,24 @@ class InputArtifactRunner(FakeRunner):
             success=True,
             exit_code=0,
             output={"success": True, "summary": "optimized", "skill": "fake"},
+        )
+
+
+class PiRuntimeConfigRunner(FakeRunner):
+    """Mimics PiRunner writing its per-task models.json (with the auth token)."""
+
+    async def run(self, **kwargs) -> RunnerResult:
+        workspace = kwargs["workspace"]
+        pi_runtime = workspace / ".pi-runtime"
+        pi_runtime.mkdir(exist_ok=True)
+        (pi_runtime / "models.json").write_text(
+            '{"providers": {"kernelagent-gateway": {"apiKey": "secret-token"}}}',
+            encoding="utf-8",
+        )
+        return RunnerResult(
+            success=True,
+            exit_code=0,
+            output={"success": True, "summary": "done", "skill": "fake"},
         )
 
 
@@ -301,6 +325,22 @@ def test_generated_files_beside_inputs_are_artifacts(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_pi_runtime_config_is_not_exposed_as_artifact(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), PiRuntimeConfigRunner())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                response = await client.post("/v1/tasks", json={"pytorch_code": PYTORCH_CODE})
+                task = await wait_for_terminal(client, response.json()["task_id"])
+
+        paths = {artifact["relative_path"] for artifact in task["artifacts"]}
+        assert not any(path.startswith(".pi-runtime") for path in paths)
+
+    asyncio.run(scenario())
+
+
 def test_restart_recovers_queued_and_marks_running_lost(tmp_path: Path) -> None:
     settings = make_settings(tmp_path, ())
     store = TaskStore(
@@ -436,3 +476,151 @@ def test_claude_runner_handles_json_lines_over_64kb(tmp_path: Path) -> None:
     result = asyncio.run(scenario())
     assert result.success is True
     assert result.output["summary"] == "ok"
+
+
+def test_pi_runner_handles_json_lines_over_64kb(tmp_path: Path) -> None:
+    """Same 64KB StreamReader limit applies to pi's --mode json output, which
+    can inline large content (e.g. a full SKILL.md) in a single event line."""
+    executable = tmp_path / "fake-pi-large-line"
+    result_json = json.dumps(
+        {"success": True, "summary": "ok", "skill": "ka-kernel-gen"}
+    )
+    assistant_message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": f"```json\n{result_json}\n```"}],
+        "stopReason": "stop",
+    }
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "huge_event = {'type': 'tool_execution_start', 'toolCallId': 't1', "
+        "'toolName': 'read', 'args': {'blob': 'x' * 200_000}}\n"
+        "print(json.dumps(huge_event))\n"
+        f"message = {assistant_message!r}\n"
+        "print(json.dumps({'type': 'message_start', 'message': message}))\n"
+        "print(json.dumps({'type': 'message_end', 'message': message}))\n"
+        "print(json.dumps({'type': 'agent_end', 'messages': [message], "
+        "'willRetry': False}))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    result = _run_pi_runner(tmp_path, executable)
+    assert result.success is True
+    assert result.output["summary"] == "ok"
+
+
+def test_prompt_uses_pi_skill_command_syntax() -> None:
+    parse = CreateTaskRequest(
+        operation="parse",
+        entrypoint="kernel.py",
+        files=[{"path": "kernel.py", "content": "# kernel"}],
+    )
+    prompt = build_skill_prompt(parse, command_prefix="/skill:")
+    assert prompt.startswith("/skill:ka-kernel-parser input/kernel.py")
+
+
+def _write_fake_pi(path: Path, assistant_message: dict) -> None:
+    script = (
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"message = {assistant_message!r}\n"
+        "print(json.dumps({'type': 'session', 'version': 3, 'id': 't', "
+        "'timestamp': 't', 'cwd': '.'}))\n"
+        "print(json.dumps({'type': 'agent_start'}))\n"
+        "print(json.dumps({'type': 'turn_start'}))\n"
+        "print(json.dumps({'type': 'message_start', 'message': message}))\n"
+        "print(json.dumps({'type': 'message_end', 'message': message}))\n"
+        "print(json.dumps({'type': 'turn_end', 'message': message, "
+        "'toolResults': []}))\n"
+        "print(json.dumps({'type': 'agent_end', 'messages': [message], "
+        "'willRetry': False}))\n"
+    )
+    path.write_text(script, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _run_pi_runner(tmp_path: Path, executable: Path) -> RunnerResult:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    settings = replace(make_settings(tmp_path), pi_command=str(executable))
+    runner = PiRunner(settings)
+
+    async def _ignore_event(_: dict) -> None:
+        return None
+
+    async def _ignore_stderr(_: str) -> None:
+        return None
+
+    async def scenario() -> RunnerResult:
+        return await runner.run(
+            task_id="pi-runner-test",
+            request=CreateTaskRequest(problem="test"),
+            workspace=workspace,
+            gpu_id="GPU-test",
+            timeout_seconds=5,
+            on_event=_ignore_event,
+            on_stderr=_ignore_stderr,
+        )
+
+    return asyncio.run(scenario())
+
+
+def test_pi_runner_parses_structured_result(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-pi"
+    result_json = json.dumps(
+        {"success": True, "summary": "did the thing", "skill": "ka-kernel-gen"}
+    )
+    _write_fake_pi(
+        executable,
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": f"Done.\n\n```json\n{result_json}\n```"}],
+            "stopReason": "stop",
+        },
+    )
+    result = _run_pi_runner(tmp_path, executable)
+    assert result.success is True
+    assert result.exit_code == 0
+    assert result.output["summary"] == "did the thing"
+    assert (tmp_path / "workspace" / ".pi-runtime" / "models.json").is_file()
+
+
+def test_pi_runner_rejects_missing_structured_result(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-pi"
+    _write_fake_pi(
+        executable,
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I finished but forgot the JSON block."}],
+            "stopReason": "stop",
+        },
+    )
+    result = _run_pi_runner(tmp_path, executable)
+    assert result.success is False
+    assert "structured result" in result.error
+
+
+def test_pi_runner_rejects_error_stop_reason_despite_zero_exit(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-pi"
+    _write_fake_pi(
+        executable,
+        {
+            "role": "assistant",
+            "content": [],
+            "stopReason": "error",
+            "errorMessage": "Connection error.",
+        },
+    )
+    result = _run_pi_runner(tmp_path, executable)
+    assert result.success is False
+    assert result.exit_code == 0
+    assert result.error == "Connection error."
+
+
+def test_create_app_selects_runner_by_agent_setting(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), agent="pi")
+    app = create_app(settings)
+    assert isinstance(app.state.task_manager.runner, PiRunner)
+
+    claude_app = create_app(make_settings(tmp_path))
+    assert isinstance(claude_app.state.task_manager.runner, ClaudeCodeRunner)
