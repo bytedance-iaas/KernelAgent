@@ -46,6 +46,11 @@ class AgentRunner(Protocol):
     async def close(self) -> None: ...
 
 
+# asyncio.StreamReader defaults to a 64KB line-length limit; Claude Code's
+# stream-json output can emit single JSON lines far larger than that (e.g.
+# large tool input/output), which would otherwise raise LimitOverrunError.
+_STREAM_LIMIT = 10 * 1024 * 1024
+
 _SKILL_BY_OPERATION = {
     Operation.PARSE: "ka-kernel-parser",
     Operation.GENERATE: "ka-kernel-gen",
@@ -168,6 +173,7 @@ class ClaudeCodeRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
+                limit=_STREAM_LIMIT,
             )
         except (FileNotFoundError, OSError) as exc:
             return RunnerResult(success=False, exit_code=None, error=str(exc))
