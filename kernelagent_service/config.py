@@ -44,7 +44,11 @@ class ServiceSettings:
     skills_dir: Path
     gpu_ids: tuple[str, ...]
     queue_capacity: int = 100
+    agent: str = "claude"
     claude_command: str = "claude"
+    pi_command: str = "pi"
+    pi_context_window: int = 200_000
+    pi_max_output_tokens: int = 16_384
     model_base_url: str = "http://127.0.0.1:30000"
     model_auth_token: str = "dummy"
     model_name: str = "default"
@@ -71,7 +75,11 @@ class ServiceSettings:
             skills_dir=skills_dir,
             gpu_ids=_detect_gpu_ids(),
             queue_capacity=_env_int("KERNEL_AGENT_QUEUE_CAPACITY", 100),
+            agent=os.getenv("KERNEL_AGENT_AGENT", "claude"),
             claude_command=os.getenv("KERNEL_AGENT_CLAUDE_COMMAND", "claude"),
+            pi_command=os.getenv("KERNEL_AGENT_PI_COMMAND", "pi"),
+            pi_context_window=_env_int("KERNEL_AGENT_PI_CONTEXT_WINDOW", 200_000),
+            pi_max_output_tokens=_env_int("KERNEL_AGENT_PI_MAX_TOKENS", 16_384),
             model_base_url=os.getenv(
                 "KERNEL_AGENT_MODEL_BASE_URL",
                 os.getenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:30000"),

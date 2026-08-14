@@ -305,12 +305,13 @@ It includes selected L1 problems with:
 ## Single-Node Task Service
 
 The repository includes an experimental asynchronous HTTP service that queues
-skill-driven Claude Code tasks and assigns one task at a time to each configured
-GPU. It uses FastAPI, an in-process `asyncio.Queue`, per-task filesystem
-persistence, and a `claude -p` subprocess configured for an Anthropic
-Messages-compatible model endpoint such as an internal SGLang deployment.
-Its submission API accepts a KernelBench-style PyTorch reference and generates
-a verified, performance-refined Triton or CuTe DSL kernel.
+skill-driven coding-agent tasks and assigns one task at a time to each
+configured GPU. It uses FastAPI, an in-process `asyncio.Queue`, per-task
+filesystem persistence, and a `claude -p` (default) or `pi` subprocess
+configured for an Anthropic Messages-compatible model endpoint such as an
+internal SGLang deployment. Its submission API accepts a KernelBench-style
+PyTorch reference and generates a verified, performance-refined Triton or
+CuTe DSL kernel.
 
 ```bash
 export KERNEL_AGENT_GPU_IDS=0

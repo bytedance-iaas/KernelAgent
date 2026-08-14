@@ -25,7 +25,7 @@ from kernelagent_service.models import (
     TaskRecord,
     TaskStatus,
 )
-from kernelagent_service.runner import AgentRunner, ClaudeCodeRunner
+from kernelagent_service.runner import AgentRunner, ClaudeCodeRunner, PiRunner
 from kernelagent_service.storage import TaskStore
 
 
@@ -34,7 +34,8 @@ def create_app(
     runner: AgentRunner | None = None,
 ) -> FastAPI:
     settings = settings or ServiceSettings.from_env()
-    runner = runner or ClaudeCodeRunner(settings)
+    if runner is None:
+        runner = PiRunner(settings) if settings.agent == "pi" else ClaudeCodeRunner(settings)
     store = TaskStore(
         settings.runs_dir,
         settings.skills_dir,

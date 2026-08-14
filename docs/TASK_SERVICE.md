@@ -23,10 +23,13 @@ codegraph init
 pip install -e .
 ```
 
-Claude Code must be installed and available on `PATH`. The configured model
-endpoint must implement the Anthropic Messages API and tool-use loop expected
-by Claude Code. An authentication-free endpoint can ignore the dummy bearer
-token sent by the service.
+Claude Code must be installed and available on `PATH` (the default agent). If
+you plan to run with `-p`/`--pi`, install the
+[`pi` coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+(`npm install -g @earendil-works/pi-coding-agent`) instead or in addition. The
+configured model endpoint must implement the Anthropic Messages API and
+tool-use loop expected by both agents. An authentication-free endpoint can
+ignore the dummy bearer token sent by the service.
 
 ## Configuration
 
@@ -42,6 +45,7 @@ Useful optional settings:
 
 | Variable | Default | Meaning |
 |---|---:|---|
+| `KERNEL_AGENT_AGENT` | `claude` | Coding agent to run tasks with: `claude` or `pi`. Overridden by `-p`/`--pi` at startup. |
 | `KERNEL_AGENT_MODEL_AUTH_TOKEN` | `dummy` | Bearer token sent to the model gateway |
 | `KERNEL_AGENT_QUEUE_CAPACITY` | `100` | Maximum queued tasks |
 | `KERNEL_AGENT_TASK_TIMEOUT_SECONDS` | `7200` | Default Claude Code wall-clock timeout |
@@ -52,6 +56,9 @@ Useful optional settings:
 | `KERNEL_AGENT_MAX_ARTIFACT_BYTES` | `52428800` | Per-file artifact limit |
 | `KERNEL_AGENT_SERVICE_HOST` | `127.0.0.1` | Listen address |
 | `KERNEL_AGENT_SERVICE_PORT` | `8080` | Listen port |
+| `KERNEL_AGENT_PI_COMMAND` | `pi` | pi executable (only used when the agent is `pi`) |
+| `KERNEL_AGENT_PI_CONTEXT_WINDOW` | `200000` | Context window (tokens) advertised to pi for the gateway model |
+| `KERNEL_AGENT_PI_MAX_TOKENS` | `16384` | Max output tokens advertised to pi for the gateway model |
 
 When `KERNEL_AGENT_GPU_IDS` is absent, the service checks
 `CUDA_VISIBLE_DEVICES`, then queries GPU UUIDs through `nvidia-smi`. If no GPU
@@ -68,6 +75,31 @@ kernel-agent-service
 
 Do not add `--workers 2` (or more). The queue and GPU ownership are local to
 the process.
+
+### Choosing an agent
+
+Claude Code is the default. Pass `-p`/`--pi` (or set `KERNEL_AGENT_AGENT=pi`)
+to run tasks through the [pi coding agent](https://github.com/earendil-works/pi-mono)
+instead:
+
+```bash
+python -m kernelagent_service -p
+
+# Equivalent after editable installation
+kernel-agent-service -p
+```
+
+pi loads the same skills as Claude Code directly from `KERNEL_AGENT_SKILLS_DIR`
+(pi implements the Agent Skills standard used by `.claude/skills`), so no
+skill changes are needed to switch agents. Because pi has no `--base-url`
+flag for arbitrary OpenAI/Anthropic-compatible endpoints, the service
+registers the configured model gateway as a custom `anthropic-messages`
+provider in a per-task `models.json`, isolated under each task's workspace
+(`PI_CODING_AGENT_DIR`) the same way Claude Code gets an isolated
+`CLAUDE_CONFIG_DIR`. Since pi has no `--json-schema` equivalent either, the
+service asks pi in-prompt to end its final message with a fenced JSON code
+block and parses that out of the reply; a run that finishes without one is
+reported as failed.
 
 ## Submit a PyTorch-to-GPU-kernel task
 

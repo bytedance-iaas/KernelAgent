@@ -118,7 +118,7 @@ class TaskStore:
 
     def discover_artifacts(self, task_id: str) -> list[Artifact]:
         workspace = self.workspace(task_id).resolve()
-        excluded_dirs = {".claude", ".claude-runtime", ".git", "__pycache__"}
+        excluded_dirs = {".claude", ".claude-runtime", ".pi-runtime", ".git", "__pycache__"}
         source_files = self._source_file_paths(task_id)
         artifacts: list[Artifact] = []
         for current, directories, files in os.walk(workspace, followlinks=False):
