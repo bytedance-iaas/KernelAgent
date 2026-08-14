@@ -391,3 +391,48 @@ def test_runner_rejects_claude_error_result_with_zero_exit(tmp_path: Path) -> No
     assert result.success is False
     assert result.exit_code == 0
     assert result.error == "turn limit"
+
+
+def test_claude_runner_handles_json_lines_over_64kb(tmp_path: Path) -> None:
+    """asyncio.StreamReader defaults to a 64KB line limit; a single stream-json
+    event (e.g. large tool input/output) can exceed that and must not crash
+    the task with LimitOverrunError."""
+    executable = tmp_path / "fake-claude-large-line"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "huge_event = {'type': 'tool_use', 'name': 'Read', "
+        "'input': {'blob': 'x' * 200_000}}\n"
+        "print(json.dumps(huge_event))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', "
+        "'is_error': False, 'result': 'done', 'structured_output': "
+        "{'success': True, 'summary': 'ok', 'skill': 'ka-kernel-gen'}}))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".claude-runtime").mkdir()
+    settings = replace(make_settings(tmp_path), claude_command=str(executable))
+    runner = ClaudeCodeRunner(settings)
+
+    async def _ignore_event(_: dict) -> None:
+        return None
+
+    async def _ignore_stderr(_: str) -> None:
+        return None
+
+    async def scenario() -> RunnerResult:
+        return await runner.run(
+            task_id="claude-large-line",
+            request=CreateTaskRequest(problem="test"),
+            workspace=workspace,
+            gpu_id="GPU-test",
+            timeout_seconds=5,
+            on_event=_ignore_event,
+            on_stderr=_ignore_stderr,
+        )
+
+    result = asyncio.run(scenario())
+    assert result.success is True
+    assert result.output["summary"] == "ok"
