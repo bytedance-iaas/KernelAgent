@@ -1,5 +1,4 @@
-"""Claude Code and pi subprocess runners, and the runner interface used by
-the scheduler."""
+"""Claude Code, pi, and Codex subprocess runners used by the scheduler."""
 
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from kernelagent_service.config import ServiceSettings
 from kernelagent_service.models import CreateTaskRequest, Operation
-
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 StderrCallback = Callable[[str], Awaitable[None]]
@@ -65,14 +63,19 @@ _SKILL_BY_OPERATION = {
 def build_skill_prompt(request: CreateTaskRequest, *, command_prefix: str = "/") -> str:
     """Build the initial prompt that invokes the right skill for the operation.
 
-    ``command_prefix`` selects the slash-command syntax for the target agent:
-    Claude Code invokes skills as ``/skill-name``, pi as ``/skill:skill-name``.
+    ``command_prefix`` selects the skill syntax for the target agent: Claude
+    Code uses ``/skill-name``, pi uses ``/skill:skill-name``, and Codex uses
+    ``$skill-name``.
     """
     skill = _SKILL_BY_OPERATION[request.operation]
     uploaded = {item.path for item in request.files}
 
     primary = request.entrypoint
-    if primary is None and request.operation == Operation.GENERATE and "problem.py" in uploaded:
+    if (
+        primary is None
+        and request.operation == Operation.GENERATE
+        and "problem.py" in uploaded
+    ):
         primary = "problem.py"
     if primary is None and len(request.files) == 1:
         primary = request.files[0].path
@@ -114,7 +117,9 @@ def build_skill_prompt(request: CreateTaskRequest, *, command_prefix: str = "/")
     if request.problem and primary:
         details.extend(["", "Additional problem description:", request.problem])
     if options.extra_instructions:
-        details.extend(["", "Additional user instructions:", options.extra_instructions])
+        details.extend(
+            ["", "Additional user instructions:", options.extra_instructions]
+        )
     return "\n".join(details)
 
 
@@ -260,7 +265,9 @@ class ClaudeCodeRunner(_SubprocessAgentRunner):
 
         stderr_task = asyncio.create_task(drain_stderr())
         try:
-            exit_code = await asyncio.wait_for(consume_stdout(), timeout=timeout_seconds)
+            exit_code = await asyncio.wait_for(
+                consume_stdout(), timeout=timeout_seconds
+            )
         except asyncio.TimeoutError:
             await self._terminate(process)
             stderr_task.cancel()
@@ -285,7 +292,8 @@ class ClaudeCodeRunner(_SubprocessAgentRunner):
             return RunnerResult(
                 success=False,
                 exit_code=exit_code,
-                error=stderr_tail.strip() or "Claude Code exited without a result event",
+                error=stderr_tail.strip()
+                or "Claude Code exited without a result event",
             )
 
         structured = last_result.get("structured_output")
@@ -337,6 +345,213 @@ class ClaudeCodeRunner(_SubprocessAgentRunner):
             }
         )
         return env
+
+
+class CodexRunner(_SubprocessAgentRunner):
+    """Run repository skills through ``codex exec`` and a Responses provider."""
+
+    async def run(
+        self,
+        *,
+        task_id: str,
+        request: CreateTaskRequest,
+        workspace: Path,
+        gpu_id: str,
+        timeout_seconds: int,
+        on_event: EventCallback,
+        on_stderr: StderrCallback,
+    ) -> RunnerResult:
+        runtime_dir = workspace / ".codex-runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        schema_path = runtime_dir / "result-schema.json"
+        output_path = runtime_dir / "final-output.json"
+        schema_path.write_text(
+            json.dumps(_RESULT_SCHEMA, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._write_config(runtime_dir)
+
+        command = [
+            self.settings.codex_command,
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--sandbox",
+            self.settings.codex_sandbox,
+            "--skip-git-repo-check",
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+            "--cd",
+            str(workspace),
+            build_skill_prompt(request, command_prefix="$"),
+        ]
+        env = self._build_environment(workspace, request, gpu_id)
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=workspace,
+                env=env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                limit=_STREAM_LIMIT,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            return RunnerResult(success=False, exit_code=None, error=str(exc))
+
+        async with self._lock:
+            self._processes[task_id] = process
+
+        session_id: str | None = None
+        event_error: str | None = None
+        stderr_tail = ""
+
+        async def drain_stderr() -> None:
+            nonlocal stderr_tail
+            assert process.stderr is not None
+            while line := await process.stderr.readline():
+                text = line.decode("utf-8", errors="replace")
+                stderr_tail = (stderr_tail + text)[-20_000:]
+                await on_stderr(text)
+
+        async def consume_stdout() -> int:
+            nonlocal event_error, session_id
+            assert process.stdout is not None
+            while line := await process.stdout.readline():
+                text = line.decode("utf-8", errors="replace").rstrip("\n")
+                try:
+                    event = json.loads(text)
+                    if not isinstance(event, dict):
+                        event = {"type": "stdout", "value": event}
+                except json.JSONDecodeError:
+                    event = {"type": "stdout", "text": text}
+                await on_event(event)
+                if event.get("type") == "thread.started":
+                    value = event.get("thread_id")
+                    if isinstance(value, str):
+                        session_id = value
+                if event.get("type") in {"error", "turn.failed"}:
+                    event_error = self._event_error(event)
+            exit_code = await process.wait()
+            await stderr_task
+            return exit_code
+
+        stderr_task = asyncio.create_task(drain_stderr())
+        try:
+            exit_code = await asyncio.wait_for(
+                consume_stdout(), timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            await self._terminate(process)
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
+            return RunnerResult(
+                success=False,
+                exit_code=process.returncode,
+                error=f"Codex exceeded the {timeout_seconds}s task timeout",
+                timed_out=True,
+                session_id=session_id,
+            )
+        except asyncio.CancelledError:
+            await self._terminate(process)
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
+            raise
+        finally:
+            async with self._lock:
+                self._processes.pop(task_id, None)
+
+        output = self._read_output(output_path)
+        semantic_success = output.get("success") is True
+        success = exit_code == 0 and event_error is None and semantic_success
+        error = None
+        if not success:
+            error = (
+                event_error
+                or stderr_tail.strip()
+                or str(output.get("summary") or output.get("result") or "").strip()
+                or f"Codex failed with exit code {exit_code}"
+            )
+        return RunnerResult(
+            success=success,
+            exit_code=exit_code,
+            output=output,
+            error=error,
+            session_id=session_id,
+        )
+
+    def _write_config(self, runtime_dir: Path) -> None:
+        base_url = self.settings.codex_model_base_url
+        if base_url is None:
+            base_url = self.settings.model_base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+        config = "\n".join(
+            [
+                f"model = {json.dumps(self.settings.model_name)}",
+                'model_provider = "kernel_agent_sglang"',
+                "model_supports_reasoning_summaries = false",
+                "",
+                "[model_providers.kernel_agent_sglang]",
+                'name = "KernelAgent SGLang"',
+                f"base_url = {json.dumps(base_url)}",
+                'wire_api = "responses"',
+                "requires_openai_auth = false",
+                "",
+            ]
+        )
+        (runtime_dir / "config.toml").write_text(config, encoding="utf-8")
+
+    def _build_environment(
+        self, workspace: Path, request: CreateTaskRequest, gpu_id: str
+    ) -> dict[str, str]:
+        env = os.environ.copy()
+        for name in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+        ):
+            env.pop(name, None)
+        skill = _SKILL_BY_OPERATION[request.operation]
+        runtime_dir = workspace / ".codex-runtime"
+        env.update(
+            {
+                "CLAUDE_SKILL_DIR": str((self.settings.skills_dir / skill).resolve()),
+                "CODEX_HOME": str(runtime_dir),
+                "CUDA_VISIBLE_DEVICES": gpu_id,
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                "CUDA_CACHE_PATH": str(runtime_dir / "cache" / "cuda"),
+                "TRITON_CACHE_DIR": str(runtime_dir / "cache" / "triton"),
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
+        return env
+
+    @staticmethod
+    def _read_output(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {"result": value}
+
+    @staticmethod
+    def _event_error(event: dict[str, Any]) -> str:
+        value = event.get("error") or event.get("message") or event
+        if isinstance(value, dict):
+            message = value.get("message") or value.get("code")
+            if message:
+                return str(message)
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
 
 
 _PI_PROVIDER_ID = "kernelagent-gateway"
@@ -482,7 +697,9 @@ class PiRunner(_SubprocessAgentRunner):
 
         stderr_task = asyncio.create_task(drain_stderr())
         try:
-            exit_code = await asyncio.wait_for(consume_stdout(), timeout=timeout_seconds)
+            exit_code = await asyncio.wait_for(
+                consume_stdout(), timeout=timeout_seconds
+            )
         except asyncio.TimeoutError:
             await self._terminate(process)
             stderr_task.cancel()
@@ -591,3 +808,13 @@ class PiRunner(_SubprocessAgentRunner):
             }
         )
         return env
+
+
+def create_runner(settings: ServiceSettings) -> AgentRunner:
+    if settings.agent == "claude":
+        return ClaudeCodeRunner(settings)
+    if settings.agent == "pi":
+        return PiRunner(settings)
+    if settings.agent == "codex":
+        return CodexRunner(settings)
+    raise ValueError(f"unsupported agent: {settings.agent}")

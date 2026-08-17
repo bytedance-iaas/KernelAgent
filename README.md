@@ -40,6 +40,14 @@ Every stage writes artifacts to a run directory under `.optimize/<run_id>/`, inc
 pip install -e .
 ```
 
+### Asynchronous task service
+
+The repository also includes a single-node HTTP service with an in-process
+queue and one worker per configured GPU. It can run the same skills through
+Claude Code (default), pi, or Codex against a self-hosted model endpoint. See
+[docs/TASK_SERVICE.md](docs/TASK_SERVICE.md) for configuration, API examples,
+task persistence, and the `/v1/responses` requirement of the Codex backend.
+
 ### Platform-Specific PyTorch Installation
 
 #### Intel XPU (Intel GPUs)

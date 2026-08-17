@@ -46,11 +46,17 @@ class TaskStore:
         input_dir.mkdir(parents=True)
         (task_dir / "logs").mkdir()
         (workspace / ".claude-runtime").mkdir()
+        (workspace / ".codex-runtime").mkdir()
 
         project_claude_dir = workspace / ".claude"
         project_claude_dir.mkdir()
         skills_link = project_claude_dir / "skills"
         skills_link.symlink_to(self.skills_dir, target_is_directory=True)
+
+        project_agents_dir = workspace / ".agents"
+        project_agents_dir.mkdir()
+        codex_skills_link = project_agents_dir / "skills"
+        codex_skills_link.symlink_to(self.skills_dir, target_is_directory=True)
 
         input_root = input_dir.resolve()
         for item in request.files:
@@ -78,7 +84,9 @@ class TaskStore:
             if not request_file.is_file():
                 continue
             try:
-                record = TaskRecord.model_validate_json(task_file.read_text(encoding="utf-8"))
+                record = TaskRecord.model_validate_json(
+                    task_file.read_text(encoding="utf-8")
+                )
                 request = CreateTaskRequest.model_validate_json(
                     request_file.read_text(encoding="utf-8")
                 )
@@ -118,7 +126,15 @@ class TaskStore:
 
     def discover_artifacts(self, task_id: str) -> list[Artifact]:
         workspace = self.workspace(task_id).resolve()
-        excluded_dirs = {".claude", ".claude-runtime", ".pi-runtime", ".git", "__pycache__"}
+        excluded_dirs = {
+            ".agents",
+            ".claude",
+            ".claude-runtime",
+            ".codex-runtime",
+            ".pi-runtime",
+            ".git",
+            "__pycache__",
+        }
         source_files = self._source_file_paths(task_id)
         artifacts: list[Artifact] = []
         for current, directories, files in os.walk(workspace, followlinks=False):
@@ -160,7 +176,11 @@ class TaskStore:
     def artifact_path(self, task_id: str, artifact: Artifact) -> Path:
         workspace = self.workspace(task_id).resolve()
         path = (workspace / artifact.relative_path).resolve()
-        if not path.is_relative_to(workspace) or not path.is_file() or path.is_symlink():
+        if (
+            not path.is_relative_to(workspace)
+            or not path.is_file()
+            or path.is_symlink()
+        ):
             raise FileNotFoundError(artifact.relative_path)
         return path
 
