@@ -14,12 +14,13 @@ from kernelagent_service.config import ServiceSettings
 from kernelagent_service.models import CreateTaskRequest, TaskRecord, TaskStatus
 from kernelagent_service.runner import (
     ClaudeCodeRunner,
+    CodexRunner,
     PiRunner,
     RunnerResult,
     build_skill_prompt,
+    create_runner,
 )
 from kernelagent_service.storage import TaskStore
-
 
 PYTORCH_CODE = """\
 import torch
@@ -62,7 +63,9 @@ class FakeRunner:
             await asyncio.sleep(self.delay)
             output = workspace / "output"
             output.mkdir(exist_ok=True)
-            (output / "kernel.py").write_text("def kernel_function(): pass\n", encoding="utf-8")
+            (output / "kernel.py").write_text(
+                "def kernel_function(): pass\n", encoding="utf-8"
+            )
             return RunnerResult(
                 success=True,
                 exit_code=0,
@@ -110,7 +113,9 @@ class PiRuntimeConfigRunner(FakeRunner):
         )
 
 
-def make_settings(tmp_path: Path, gpu_ids: tuple[str, ...] = ("GPU-test",)) -> ServiceSettings:
+def make_settings(
+    tmp_path: Path, gpu_ids: tuple[str, ...] = ("GPU-test",)
+) -> ServiceSettings:
     repo_root = Path(__file__).resolve().parent.parent
     return ServiceSettings(
         repo_root=repo_root,
@@ -144,7 +149,13 @@ async def wait_for_terminal(
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         payload = (await client.get(f"/v1/tasks/{task_id}")).json()
-        if payload["status"] in {"succeeded", "failed", "canceled", "timed_out", "lost"}:
+        if payload["status"] in {
+            "succeeded",
+            "failed",
+            "canceled",
+            "timed_out",
+            "lost",
+        }:
             return payload
         await asyncio.sleep(0.01)
     raise AssertionError(f"task {task_id} did not finish")
@@ -162,6 +173,7 @@ def test_submit_run_query_and_download_artifact(tmp_path: Path) -> None:
                 task = await wait_for_terminal(client, task_id)
 
                 assert task["status"] == "succeeded"
+                assert task["runner_backend"] == "claude"
                 assert task["gpu_id"] == "GPU-test"
                 assert task["result"]["output"]["summary"] == "done"
                 assert task["event_count"] == 1
@@ -194,7 +206,9 @@ def test_one_worker_serializes_tasks_on_one_gpu(tmp_path: Path) -> None:
                 first = await submit(client, "first")
                 second = await submit(client, "second")
                 assert (await wait_for_terminal(client, first))["status"] == "succeeded"
-                assert (await wait_for_terminal(client, second))["status"] == "succeeded"
+                assert (await wait_for_terminal(client, second))[
+                    "status"
+                ] == "succeeded"
         assert runner.max_running == 1
         assert [gpu for _, gpu in runner.calls] == ["GPU-test", "GPU-test"]
 
@@ -211,7 +225,9 @@ def test_list_tasks_filters_status_and_paginates(tmp_path: Path) -> None:
             ) as client:
                 first = await submit(client, "first")
                 for _ in range(50):
-                    if (await client.get(f"/v1/tasks/{first}")).json()["status"] == "running":
+                    if (await client.get(f"/v1/tasks/{first}")).json()[
+                        "status"
+                    ] == "running":
                         break
                     await asyncio.sleep(0.01)
                 else:
@@ -290,9 +306,12 @@ def test_rejects_invalid_pytorch_problem_and_missing_gpu(tmp_path: Path) -> None
         no_gpu_app = create_app(make_settings(tmp_path / "none", ()), runner)
         async with no_gpu_app.router.lifespan_context(no_gpu_app):
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=no_gpu_app), base_url="http://testserver"
+                transport=httpx.ASGITransport(app=no_gpu_app),
+                base_url="http://testserver",
             ) as client:
-                assert (await client.get("/healthz")).json()["status"] == "degraded"
+                health = (await client.get("/healthz")).json()
+                assert health["status"] == "degraded"
+                assert health["runner_backend"] == "claude"
                 unavailable = await client.post(
                     "/v1/tasks",
                     json={"pytorch_code": PYTORCH_CODE},
@@ -332,7 +351,9 @@ def test_pi_runtime_config_is_not_exposed_as_artifact(tmp_path: Path) -> None:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://testserver"
             ) as client:
-                response = await client.post("/v1/tasks", json={"pytorch_code": PYTORCH_CODE})
+                response = await client.post(
+                    "/v1/tasks", json={"pytorch_code": PYTORCH_CODE}
+                )
                 task = await wait_for_terminal(client, response.json()["task_id"])
 
         paths = {artifact["relative_path"] for artifact in task["artifacts"]}
@@ -391,6 +412,9 @@ def test_prompt_routes_operations_to_explicit_skills() -> None:
     )
     assert build_skill_prompt(parse).startswith("/ka-kernel-parser input/kernel.py")
     assert build_skill_prompt(optimize).startswith("/ka-kernel-opt input")
+    assert build_skill_prompt(parse, command_prefix="$").startswith(
+        "$ka-kernel-parser input/kernel.py"
+    )
 
 
 def test_runner_rejects_claude_error_result_with_zero_exit(tmp_path: Path) -> None:
@@ -574,7 +598,9 @@ def test_pi_runner_parses_structured_result(tmp_path: Path) -> None:
         executable,
         {
             "role": "assistant",
-            "content": [{"type": "text", "text": f"Done.\n\n```json\n{result_json}\n```"}],
+            "content": [
+                {"type": "text", "text": f"Done.\n\n```json\n{result_json}\n```"}
+            ],
             "stopReason": "stop",
         },
     )
@@ -591,7 +617,9 @@ def test_pi_runner_rejects_missing_structured_result(tmp_path: Path) -> None:
         executable,
         {
             "role": "assistant",
-            "content": [{"type": "text", "text": "I finished but forgot the JSON block."}],
+            "content": [
+                {"type": "text", "text": "I finished but forgot the JSON block."}
+            ],
             "stopReason": "stop",
         },
     )
@@ -624,3 +652,101 @@ def test_create_app_selects_runner_by_agent_setting(tmp_path: Path) -> None:
 
     claude_app = create_app(make_settings(tmp_path))
     assert isinstance(claude_app.state.task_manager.runner, ClaudeCodeRunner)
+
+    codex_settings = replace(make_settings(tmp_path / "codex"), agent="codex")
+    codex_app = create_app(codex_settings)
+    assert isinstance(codex_app.state.task_manager.runner, CodexRunner)
+
+    assert isinstance(create_runner(settings), PiRunner)
+
+
+def test_codex_runner_uses_project_skill_and_responses_provider(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-codex"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "output = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
+        "payload = {\n"
+        "    'success': True,\n"
+        "    'summary': 'codex done',\n"
+        "    'skill': 'ka-kernel-gen',\n"
+        "    'route': 'kernelagent',\n"
+        "    'kernel_path': 'output/kernel.py',\n"
+        "    'rounds': 2,\n"
+        "    'metrics': {},\n"
+        "    'warnings': [],\n"
+        "}\n"
+        "output.write_text(json.dumps(payload))\n"
+        "print(json.dumps({'type': 'thread.started', 'thread_id': 'codex-thread'}))\n"
+        "print(json.dumps({'type': 'turn.started'}))\n"
+        "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message'}}))\n"
+        "print(json.dumps({'type': 'turn.completed'}))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill_dir = tmp_path / "skills" / "ka-kernel-gen"
+    skill_dir.mkdir(parents=True)
+    settings = replace(
+        make_settings(tmp_path),
+        agent="codex",
+        codex_command=str(executable),
+        skills_dir=tmp_path / "skills",
+        model_base_url="http://127.0.0.1:30000",
+        model_name="local-kernel-model",
+    )
+    runner = CodexRunner(settings)
+
+    async def scenario() -> tuple[RunnerResult, list[dict]]:
+        events: list[dict] = []
+
+        async def on_event(event: dict) -> None:
+            events.append(event)
+
+        async def on_stderr(_: str) -> None:
+            return None
+
+        result = await runner.run(
+            task_id="codex-success",
+            request=CreateTaskRequest(problem="test"),
+            workspace=workspace,
+            gpu_id="GPU-test",
+            timeout_seconds=5,
+            on_event=on_event,
+            on_stderr=on_stderr,
+        )
+        return result, events
+
+    result, events = asyncio.run(scenario())
+    config = (workspace / ".codex-runtime" / "config.toml").read_text(encoding="utf-8")
+
+    assert result.success is True
+    assert result.session_id == "codex-thread"
+    assert result.output["summary"] == "codex done"
+    assert [event["type"] for event in events] == [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "turn.completed",
+    ]
+    assert 'model = "local-kernel-model"' in config
+    assert 'base_url = "http://127.0.0.1:30000/v1"' in config
+    assert 'wire_api = "responses"' in config
+    assert "requires_openai_auth = false" in config
+
+
+def test_task_workspace_exposes_skills_to_claude_and_codex(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    store = TaskStore(
+        settings.runs_dir,
+        settings.skills_dir,
+        max_artifact_bytes=settings.max_artifact_bytes,
+        max_artifacts=settings.max_artifacts,
+    )
+    record = TaskRecord(id="skill-links", operation="generate")
+    workspace = store.create(record, CreateTaskRequest(problem="vector addition"))
+
+    assert (workspace / ".claude" / "skills").resolve() == settings.skills_dir.resolve()
+    assert (workspace / ".agents" / "skills").resolve() == settings.skills_dir.resolve()

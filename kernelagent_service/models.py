@@ -91,9 +91,7 @@ class KernelGenerationRequest(BaseModel):
     @classmethod
     def validate_pytorch_problem(cls, value: str) -> str:
         tree = cls._parse_python(value, "pytorch_code")
-        classes = {
-            node.name for node in tree.body if isinstance(node, ast.ClassDef)
-        }
+        classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
         functions = {
             node.name
             for node in tree.body
@@ -146,7 +144,9 @@ class KernelGenerationRequest(BaseModel):
             return ast.parse(value)
         except SyntaxError as exc:
             location = f" at line {exc.lineno}" if exc.lineno else ""
-            raise ValueError(f"{field_name} is not valid Python{location}: {exc.msg}") from exc
+            raise ValueError(
+                f"{field_name} is not valid Python{location}: {exc.msg}"
+            ) from exc
 
 
 class CreateTaskRequest(BaseModel):
@@ -182,10 +182,16 @@ class CreateTaskRequest(BaseModel):
         if self.entrypoint is not None and self.entrypoint not in paths:
             raise ValueError("entrypoint must name one of the uploaded files")
         if not self.files and not self.problem:
-            raise ValueError("at least one input file or a problem description is required")
+            raise ValueError(
+                "at least one input file or a problem description is required"
+            )
         if self.operation == Operation.PARSE and not self.files:
             raise ValueError("parse requires at least one kernel source file")
-        if self.operation in {Operation.PROFILE, Operation.DIAGNOSE, Operation.OPTIMIZE}:
+        if self.operation in {
+            Operation.PROFILE,
+            Operation.DIAGNOSE,
+            Operation.OPTIMIZE,
+        }:
             required = {"input.py", "problem.py", "test.py"}
             top_level = {path for path in paths if "/" not in path}
             missing = required - top_level
@@ -208,6 +214,7 @@ class Artifact(BaseModel):
 class TaskRecord(BaseModel):
     id: str
     operation: Operation
+    runner_backend: Literal["claude", "pi", "codex"] = "claude"
     status: TaskStatus = TaskStatus.QUEUED
     stage: str | None = None
     gpu_id: str | None = None
@@ -236,6 +243,7 @@ class TaskEvent(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
+    runner_backend: Literal["claude", "pi", "codex"]
     queue_size: int
     queue_capacity: int
     gpu_workers: list[str]

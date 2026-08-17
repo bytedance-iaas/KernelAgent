@@ -25,7 +25,7 @@ from kernelagent_service.models import (
     TaskRecord,
     TaskStatus,
 )
-from kernelagent_service.runner import AgentRunner, ClaudeCodeRunner, PiRunner
+from kernelagent_service.runner import AgentRunner, create_runner
 from kernelagent_service.storage import TaskStore
 
 
@@ -34,8 +34,7 @@ def create_app(
     runner: AgentRunner | None = None,
 ) -> FastAPI:
     settings = settings or ServiceSettings.from_env()
-    if runner is None:
-        runner = PiRunner(settings) if settings.agent == "pi" else ClaudeCodeRunner(settings)
+    runner = runner or create_runner(settings)
     store = TaskStore(
         settings.runs_dir,
         settings.skills_dir,
@@ -63,6 +62,7 @@ def create_app(
     async def health() -> HealthResponse:
         return HealthResponse(
             status="ok" if settings.gpu_ids else "degraded",
+            runner_backend=settings.agent,
             queue_size=manager.queue.qsize(),
             queue_capacity=settings.queue_capacity,
             gpu_workers=list(settings.gpu_ids),
@@ -132,7 +132,9 @@ def create_app(
             artifact, path = await manager.artifact_path(task_id, artifact_id)
         except (TaskNotFoundError, FileNotFoundError) as exc:
             raise HTTPException(status_code=404, detail="artifact not found") from exc
-        media_type = mimetypes.guess_type(artifact.name)[0] or "application/octet-stream"
+        media_type = (
+            mimetypes.guess_type(artifact.name)[0] or "application/octet-stream"
+        )
         return Response(
             content=path.read_bytes(),
             media_type=media_type,

@@ -62,7 +62,9 @@ class TaskManager:
         self._started = True
         await self._recover()
         self.worker_tasks = [
-            asyncio.create_task(self._gpu_worker(gpu_id), name=f"kernel-agent-gpu-{gpu_id}")
+            asyncio.create_task(
+                self._gpu_worker(gpu_id), name=f"kernel-agent-gpu-{gpu_id}"
+            )
             for gpu_id in self.settings.gpu_ids
         ]
 
@@ -90,7 +92,11 @@ class TaskManager:
             if self.queue.full():
                 raise QueueCapacityError("task queue is full")
 
-            record = TaskRecord(id=str(uuid4()), operation=request.operation)
+            record = TaskRecord(
+                id=str(uuid4()),
+                operation=request.operation,
+                runner_backend=self.settings.agent,
+            )
             self.store.create(record, request)
             async with self._lock:
                 self.records[record.id] = record
@@ -118,8 +124,13 @@ class TaskManager:
                 for record in self.records.values()
                 if statuses is None or record.status in statuses
             )
-            ordered = sorted(records, key=lambda record: record.created_at, reverse=True)
-            return [record.model_copy(deep=True) for record in ordered[offset : offset + limit]]
+            ordered = sorted(
+                records, key=lambda record: record.created_at, reverse=True
+            )
+            return [
+                record.model_copy(deep=True)
+                for record in ordered[offset : offset + limit]
+            ]
 
     async def cancel(self, task_id: str) -> TaskRecord:
         async with self._lock:
@@ -137,13 +148,19 @@ class TaskManager:
         await self.runner.cancel(task_id)
         return result
 
-    async def read_events(self, task_id: str, *, after: int, limit: int) -> list[TaskEvent]:
+    async def read_events(
+        self, task_id: str, *, after: int, limit: int
+    ) -> list[TaskEvent]:
         await self.get(task_id)
         return self.store.read_events(task_id, after=after, limit=limit)
 
-    async def artifact_path(self, task_id: str, artifact_id: str) -> tuple[Artifact, Path]:
+    async def artifact_path(
+        self, task_id: str, artifact_id: str
+    ) -> tuple[Artifact, Path]:
         record = await self.get(task_id)
-        artifact = next((item for item in record.artifacts if item.id == artifact_id), None)
+        artifact = next(
+            (item for item in record.artifacts if item.id == artifact_id), None
+        )
         if artifact is None:
             raise FileNotFoundError(artifact_id)
         return artifact, self.store.artifact_path(task_id, artifact)
@@ -189,7 +206,10 @@ class TaskManager:
                     self._touch(record)
                     request = self.requests[task_id]
 
-                timeout = request.options.timeout_seconds or self.settings.default_timeout_seconds
+                timeout = (
+                    request.options.timeout_seconds
+                    or self.settings.default_timeout_seconds
+                )
                 result = await self.runner.run(
                     task_id=task_id,
                     request=request,
@@ -255,7 +275,9 @@ class TaskManager:
             record = self.records[task_id]
             record.event_count += 1
             event_type = str(payload.get("type", "event"))
-            if event_type in {"assistant", "tool_use", "tool_result", "result"}:
+            if event_type in {"assistant", "tool_use", "tool_result", "result"} or (
+                event_type.startswith(("thread.", "turn.", "item."))
+            ):
                 record.stage = event_type
             event = TaskEvent(
                 sequence=record.event_count,

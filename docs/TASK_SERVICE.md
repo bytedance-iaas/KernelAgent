@@ -1,9 +1,9 @@
 # KernelAgent Single-Node Task Service
 
-`kernelagent_service` exposes the repository's Claude Code skills as an
-asynchronous HTTP service. The first implementation intentionally uses an
-in-process `asyncio.Queue`: one coroutine owns each configured GPU and pulls the
-next task only after its previous task exits.
+`kernelagent_service` exposes the repository's agent skills through Claude
+Code, pi, or Codex as an asynchronous HTTP service. The first implementation
+intentionally uses an in-process `asyncio.Queue`: one coroutine owns each
+configured GPU and pulls the next task only after its previous task exits.
 
 The submission contract mirrors KernelAgent's normal generation input: provide
 a KernelBench-style PyTorch reference with concrete inputs, then select Triton
@@ -23,13 +23,16 @@ codegraph init
 pip install -e .
 ```
 
-Claude Code must be installed and available on `PATH` (the default agent). If
-you plan to run with `-p`/`--pi`, install the
-[`pi` coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-(`npm install -g @earendil-works/pi-coding-agent`) instead or in addition. The
-configured model endpoint must implement the Anthropic Messages API and
-tool-use loop expected by both agents. An authentication-free endpoint can
-ignore the dummy bearer token sent by the service.
+Install the CLI selected by `KERNEL_AGENT_AGENT` and make it available on
+`PATH`:
+
+- `claude` (the default) and `pi` use the Anthropic Messages API. Install pi
+  with `npm install -g @earendil-works/pi-coding-agent` when needed. An
+  authentication-free endpoint can ignore the dummy bearer token.
+- `codex` uses the OpenAI Responses API (`/v1/responses`). Supporting only
+  `/v1/messages` or `/v1/chat/completions` is not sufficient. The generated
+  provider has `requires_openai_auth = false`, so no OpenAI API key or
+  interactive login is required.
 
 ## Configuration
 
@@ -45,10 +48,15 @@ Useful optional settings:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `KERNEL_AGENT_AGENT` | `claude` | Coding agent to run tasks with: `claude` or `pi`. Overridden by `-p`/`--pi` at startup. |
+| `KERNEL_AGENT_AGENT` | `claude` | Coding agent: `claude`, `pi`, or `codex`. Overridden by `-p`/`--pi` at startup. |
+| `KERNEL_AGENT_RUNNER` | — | Backward-compatible alias used only when `KERNEL_AGENT_AGENT` is unset |
+| `KERNEL_AGENT_CLAUDE_COMMAND` | `claude` | Claude Code executable |
+| `KERNEL_AGENT_CODEX_COMMAND` | `codex` | Codex executable |
+| `KERNEL_AGENT_CODEX_BASE_URL` | `<model-base-url>/v1` | Codex Responses API root |
+| `KERNEL_AGENT_CODEX_SANDBOX` | `workspace-write` | Codex sandbox: `read-only`, `workspace-write`, or `danger-full-access` |
 | `KERNEL_AGENT_MODEL_AUTH_TOKEN` | `dummy` | Bearer token sent to the model gateway |
 | `KERNEL_AGENT_QUEUE_CAPACITY` | `100` | Maximum queued tasks |
-| `KERNEL_AGENT_TASK_TIMEOUT_SECONDS` | `7200` | Default Claude Code wall-clock timeout |
+| `KERNEL_AGENT_TASK_TIMEOUT_SECONDS` | `7200` | Default agent wall-clock timeout |
 | `KERNEL_AGENT_SHUTDOWN_GRACE_SECONDS` | `10` | Seconds between SIGTERM and SIGKILL |
 | `KERNEL_AGENT_RUNS_DIR` | `.kernel_agent_service/runs` | Persistent task directory |
 | `KERNEL_AGENT_SKILLS_DIR` | `<repo>/.claude/skills` | Project skills exposed to each task |
@@ -101,6 +109,21 @@ service asks pi in-prompt to end its final message with a fenced JSON code
 block and parses that out of the reply; a run that finishes without one is
 reported as failed.
 
+To run Codex against a self-hosted SGLang Responses endpoint:
+
+```bash
+export KERNEL_AGENT_AGENT=codex
+export KERNEL_AGENT_MODEL_BASE_URL=http://127.0.0.1:30000
+export KERNEL_AGENT_MODEL=my-sglang-model
+python -m kernelagent_service
+```
+
+The service derives the provider root as
+`http://127.0.0.1:30000/v1`; set `KERNEL_AGENT_CODEX_BASE_URL` when the exact
+Responses-compatible API root differs. Each task receives an isolated
+`CODEX_HOME`, and Codex discovers the shared project skills through
+`.agents/skills`.
+
 ## Submit a PyTorch-to-GPU-kernel task
 
 ```bash
@@ -130,9 +153,11 @@ Request fields:
 | `timeout_seconds` | no | service default | Per-task wall-clock timeout, 30–86400 seconds |
 | `extra_instructions` | no | — | Extra optimization constraints or hints |
 
-The service materializes the reference as `input/problem.py`, explicitly
-invokes `/ka-kernel-gen input/problem.py`, forbids PyTorch fallback in the
-generated implementation, and asks the skill to benchmark and refine rather
+The service materializes the reference as `input/problem.py` and invokes
+`/ka-kernel-gen input/problem.py` for Claude Code,
+`/skill:ka-kernel-gen input/problem.py` for pi, or
+`$ka-kernel-gen input/problem.py` for Codex. It forbids PyTorch fallback in the
+generated implementation and asks the skill to benchmark and refine rather
 than stopping at the first correct candidate.
 
 ## Query, events, artifacts, and cancellation
@@ -151,7 +176,8 @@ than one state; omit it to include every state. `offset` defaults to `0` and
 `limit` defaults to `100` (maximum `1000`).
 
 Statuses are `queued`, `running`, `succeeded`, `failed`, `canceled`,
-`timed_out`, and `lost`. Canceling a running task terminates the Claude Code
+`timed_out`, and `lost`. Every task record includes `runner_backend`, recording
+the agent selected at submission. Canceling a running task terminates the agent
 process group, including child compiler, Python, and profiler processes.
 
 ## Persistence and recovery
@@ -167,6 +193,11 @@ Queue membership is in memory, while task metadata and outputs are written to:
 │   └── stderr.log
 └── workspace/
     ├── input/
+    ├── .claude/skills -> <skills-dir>
+    ├── .agents/skills -> <skills-dir>
+    ├── .claude-runtime/
+    ├── .codex-runtime/
+    ├── .pi-runtime/
     ├── .fuse/
     ├── .optimize/
     └── generated artifacts
@@ -178,9 +209,12 @@ process and partially written artifacts cannot be assumed safe.
 
 ## Security boundary
 
-Claude Code and generated kernels execute arbitrary shell/Python/GPU code. The
-service creates separate task directories and restricts the Claude tool set,
-but this is not a hostile-code sandbox. Before accepting untrusted public
-requests, run each task in a non-root container or VM with a read-only base
-repository, a task-only writable mount, explicit GPU assignment, resource
-limits, restricted network egress, and no host credentials or Docker socket.
+The agent CLI and generated kernels execute arbitrary shell/Python/GPU code.
+The service creates separate task directories and enables Codex's
+`workspace-write` sandbox by default, but this is not a complete hostile-code
+sandbox. Before accepting untrusted public requests, run each task in a
+non-root container or VM with a read-only base repository, a task-only writable
+mount, explicit GPU assignment, resource limits, restricted network egress,
+and no host credentials or Docker socket. Use
+`KERNEL_AGENT_CODEX_SANDBOX=danger-full-access` only inside such an external
+isolation boundary.
