@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 
 from kernelagent_service.config import ServiceSettings
 from kernelagent_service.manager import (
@@ -27,6 +27,7 @@ from kernelagent_service.models import (
 )
 from kernelagent_service.runner import AgentRunner, create_runner
 from kernelagent_service.storage import TaskStore
+from kernelagent_service.ui import render_task_ui
 
 
 def create_app(
@@ -57,6 +58,22 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.task_manager = manager
+
+    @app.get("/v1/ui", response_class=HTMLResponse, include_in_schema=False)
+    async def task_ui() -> HTMLResponse:
+        return HTMLResponse(
+            content=render_task_ui(),
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; "
+                    "style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'; "
+                    "connect-src 'self'; "
+                    "img-src 'self' data:"
+                ),
+            },
+        )
 
     @app.get("/healthz", response_model=HealthResponse)
     async def health() -> HealthResponse:

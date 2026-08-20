@@ -210,7 +210,7 @@ class ClaudeCodeRunner(_SubprocessAgentRunner):
             "--tools",
             "Read,Write,Edit,Grep,Glob,Bash,Skill",
             "--allowedTools",
-            "Read,Write,Edit,Grep,Glob,Bash",
+            "Read,Write,Edit,Grep,Glob,Bash,Skill",
             "--no-session-persistence",
             "--json-schema",
             json.dumps(_RESULT_SCHEMA, separators=(",", ":")),

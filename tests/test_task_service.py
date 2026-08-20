@@ -195,6 +195,26 @@ def test_submit_run_query_and_download_artifact(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.get("/v1/ui")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.headers["cache-control"] == "no-store"
+        assert "default-src 'self'" in response.headers["content-security-policy"]
+        assert "KernelAgent Console" in response.text
+        assert "创建 Kernel 任务" in response.text
+        assert "fetch(path" in response.text
+        assert "/v1/tasks" in response.text
+
+    asyncio.run(scenario())
+
+
 def test_one_worker_serializes_tasks_on_one_gpu(tmp_path: Path) -> None:
     async def scenario() -> None:
         runner = FakeRunner(delay=0.08)
