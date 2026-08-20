@@ -131,12 +131,14 @@ async def submit(
     client: httpx.AsyncClient,
     label: str = "test",
     kernel_language: str = "triton",
+    runner_backend: str = "claude",
 ) -> str:
     response = await client.post(
         "/v1/tasks",
         json={
             "pytorch_code": f"{PYTORCH_CODE}\n# {label}\n",
             "kernel_language": kernel_language,
+            "runner_backend": runner_backend,
         },
     )
     assert response.status_code == 202, response.text
@@ -195,6 +197,34 @@ def test_submit_run_query_and_download_artifact(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_each_task_selects_its_harness_runner(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runners = {
+            "claude": FakeRunner(),
+            "pi": FakeRunner(),
+            "codex": FakeRunner(),
+        }
+        app = create_app(make_settings(tmp_path), runners)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                task_ids = {
+                    backend: await submit(client, backend, runner_backend=backend)
+                    for backend in runners
+                }
+                for backend, task_id in task_ids.items():
+                    task = await wait_for_terminal(client, task_id)
+                    assert task["status"] == "succeeded"
+                    assert task["runner_backend"] == backend
+
+        assert len(runners["claude"].calls) == 1
+        assert len(runners["pi"].calls) == 1
+        assert len(runners["codex"].calls) == 1
+
+    asyncio.run(scenario())
+
+
 def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -> None:
     async def scenario() -> None:
         app = create_app(make_settings(tmp_path), FakeRunner())
@@ -209,6 +239,8 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert "default-src 'self'" in response.headers["content-security-policy"]
         assert "KernelAgent Console" in response.text
         assert "创建 Kernel 任务" in response.text
+        assert 'id="runner"' in response.text
+        assert "runner_backend: $('runner').value" in response.text
         assert "fetch(path" in response.text
         assert "/v1/tasks" in response.text
 
@@ -323,6 +355,12 @@ def test_rejects_invalid_pytorch_problem_and_missing_gpu(tmp_path: Path) -> None
                 )
                 assert unsupported_language.status_code == 422
 
+                unsupported_runner = await client.post(
+                    "/v1/tasks",
+                    json={"pytorch_code": PYTORCH_CODE, "runner_backend": "unknown"},
+                )
+                assert unsupported_runner.status_code == 422
+
         no_gpu_app = create_app(make_settings(tmp_path / "none", ()), runner)
         async with no_gpu_app.router.lifespan_context(no_gpu_app):
             async with httpx.AsyncClient(
@@ -331,7 +369,7 @@ def test_rejects_invalid_pytorch_problem_and_missing_gpu(tmp_path: Path) -> None
             ) as client:
                 health = (await client.get("/healthz")).json()
                 assert health["status"] == "degraded"
-                assert health["runner_backend"] == "claude"
+                assert health["runner_backends"] == ["claude", "pi", "codex"]
                 unavailable = await client.post(
                     "/v1/tasks",
                     json={"pytorch_code": PYTORCH_CODE},
@@ -665,19 +703,16 @@ def test_pi_runner_rejects_error_stop_reason_despite_zero_exit(tmp_path: Path) -
     assert result.error == "Connection error."
 
 
-def test_create_app_selects_runner_by_agent_setting(tmp_path: Path) -> None:
-    settings = replace(make_settings(tmp_path), agent="pi")
-    app = create_app(settings)
-    assert isinstance(app.state.task_manager.runner, PiRunner)
+def test_create_app_registers_all_task_runners(tmp_path: Path) -> None:
+    app = create_app(make_settings(tmp_path))
+    runners = app.state.task_manager.runners
 
-    claude_app = create_app(make_settings(tmp_path))
-    assert isinstance(claude_app.state.task_manager.runner, ClaudeCodeRunner)
-
-    codex_settings = replace(make_settings(tmp_path / "codex"), agent="codex")
-    codex_app = create_app(codex_settings)
-    assert isinstance(codex_app.state.task_manager.runner, CodexRunner)
-
-    assert isinstance(create_runner(settings), PiRunner)
+    assert isinstance(runners["claude"], ClaudeCodeRunner)
+    assert isinstance(runners["pi"], PiRunner)
+    assert isinstance(runners["codex"], CodexRunner)
+    assert isinstance(
+        create_runner(replace(make_settings(tmp_path / "pi"), agent="pi")), PiRunner
+    )
 
 
 def test_codex_runner_uses_project_skill_and_responses_provider(tmp_path: Path) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 from kernelagent_service.config import ServiceSettings
@@ -12,6 +12,7 @@ from kernelagent_service.models import (
     TERMINAL_STATUSES,
     Artifact,
     CreateTaskRequest,
+    RunnerBackend,
     TaskEvent,
     TaskRecord,
     TaskStatus,
@@ -37,11 +38,11 @@ class TaskManager:
     def __init__(
         self,
         settings: ServiceSettings,
-        runner: AgentRunner,
+        runners: Mapping[RunnerBackend, AgentRunner],
         store: TaskStore,
     ) -> None:
         self.settings = settings
-        self.runner = runner
+        self.runners = dict(runners)
         self.store = store
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.queue_capacity)
         self.records: dict[str, TaskRecord] = {}
@@ -51,6 +52,11 @@ class TaskManager:
         self._started = False
         self._lock = asyncio.Lock()
         self._submit_lock = asyncio.Lock()
+
+    @property
+    def runner(self) -> AgentRunner:
+        """Backward-compatible access to the legacy service-default runner."""
+        return self.runners[self.settings.agent]
 
     @property
     def running_count(self) -> int:
@@ -76,7 +82,8 @@ class TaskManager:
             worker.cancel()
         await asyncio.gather(*self.worker_tasks, return_exceptions=True)
         self.worker_tasks.clear()
-        await self.runner.close()
+        unique_runners = {id(runner): runner for runner in self.runners.values()}
+        await asyncio.gather(*(runner.close() for runner in unique_runners.values()))
 
     async def create(self, request: CreateTaskRequest) -> TaskRecord:
         if not self.settings.gpu_ids:
@@ -95,7 +102,7 @@ class TaskManager:
             record = TaskRecord(
                 id=str(uuid4()),
                 operation=request.operation,
-                runner_backend=self.settings.agent,
+                runner_backend=request.runner_backend,
             )
             self.store.create(record, request)
             async with self._lock:
@@ -145,7 +152,7 @@ class TaskManager:
             record.error = "task canceled by user"
             self._touch(record)
             result = record.model_copy(deep=True)
-        await self.runner.cancel(task_id)
+        await self.runners[record.runner_backend].cancel(task_id)
         return result
 
     async def read_events(
@@ -192,6 +199,7 @@ class TaskManager:
     async def _gpu_worker(self, gpu_id: str) -> None:
         while True:
             task_id = await self.queue.get()
+            runner: AgentRunner | None = None
             try:
                 async with self._lock:
                     record = self.records[task_id]
@@ -205,12 +213,13 @@ class TaskManager:
                     self._current_by_gpu[gpu_id] = task_id
                     self._touch(record)
                     request = self.requests[task_id]
+                    runner = self.runners[record.runner_backend]
 
                 timeout = (
                     request.options.timeout_seconds
                     or self.settings.default_timeout_seconds
                 )
-                result = await self.runner.run(
+                result = await runner.run(
                     task_id=task_id,
                     request=request,
                     workspace=self.store.workspace(task_id),
@@ -221,7 +230,8 @@ class TaskManager:
                 )
                 await self._complete(task_id, result)
             except asyncio.CancelledError:
-                await self.runner.cancel(task_id)
+                if runner is not None:
+                    await runner.cancel(task_id)
                 async with self._lock:
                     record = self.records.get(task_id)
                     if record is not None and record.status == TaskStatus.RUNNING:

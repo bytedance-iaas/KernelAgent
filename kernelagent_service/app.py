@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -21,6 +23,7 @@ from kernelagent_service.models import (
     CreateTaskResponse,
     HealthResponse,
     KernelGenerationRequest,
+    RunnerBackend,
     TaskEvent,
     TaskRecord,
     TaskStatus,
@@ -32,17 +35,32 @@ from kernelagent_service.ui import render_task_ui
 
 def create_app(
     settings: ServiceSettings | None = None,
-    runner: AgentRunner | None = None,
+    runner: AgentRunner | Mapping[RunnerBackend, AgentRunner] | None = None,
 ) -> FastAPI:
     settings = settings or ServiceSettings.from_env()
-    runner = runner or create_runner(settings)
+    backends: tuple[RunnerBackend, ...] = ("claude", "pi", "codex")
+    if runner is None:
+        runners = {
+            backend: create_runner(replace(settings, agent=backend))
+            for backend in backends
+        }
+    elif isinstance(runner, Mapping):
+        runners = dict(runner)
+    else:
+        # A single injected runner remains useful for tests and embedding.
+        runners = {backend: runner for backend in backends}
+    missing_runners = set(backends) - runners.keys()
+    if missing_runners:
+        raise ValueError(
+            f"missing task runners: {', '.join(sorted(missing_runners))}"
+        )
     store = TaskStore(
         settings.runs_dir,
         settings.skills_dir,
         max_artifact_bytes=settings.max_artifact_bytes,
         max_artifacts=settings.max_artifacts,
     )
-    manager = TaskManager(settings, runner, store)
+    manager = TaskManager(settings, runners, store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -79,7 +97,7 @@ def create_app(
     async def health() -> HealthResponse:
         return HealthResponse(
             status="ok" if settings.gpu_ids else "degraded",
-            runner_backend=settings.agent,
+            runner_backends=list(backends),
             queue_size=manager.queue.qsize(),
             queue_capacity=settings.queue_capacity,
             gpu_workers=list(settings.gpu_ids),
