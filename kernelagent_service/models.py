@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+RunnerBackend = Literal["claude", "pi", "codex"]
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -77,6 +79,7 @@ class KernelGenerationRequest(BaseModel):
             "KernelBench-style Python containing class Model and get_inputs()."
         ),
     )
+    runner_backend: RunnerBackend = "claude"
     kernel_language: Literal["triton", "cutedsl"] = "triton"
     test_code: str | None = Field(
         default=None,
@@ -122,6 +125,7 @@ class KernelGenerationRequest(BaseModel):
             files.append(InputFile(path="custom_test.py", content=self.test_code))
         return CreateTaskRequest(
             operation=Operation.GENERATE,
+            runner_backend=self.runner_backend,
             problem=(
                 "Generate a verified, high-performance GPU implementation of the "
                 "uploaded PyTorch reference. Benchmark and refine it; do not use "
@@ -151,6 +155,7 @@ class KernelGenerationRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     operation: Operation = Operation.GENERATE
+    runner_backend: RunnerBackend = "claude"
     problem: str | None = Field(
         default=None,
         max_length=200_000,
@@ -214,7 +219,7 @@ class Artifact(BaseModel):
 class TaskRecord(BaseModel):
     id: str
     operation: Operation
-    runner_backend: Literal["claude", "pi", "codex"] = "claude"
+    runner_backend: RunnerBackend = "claude"
     status: TaskStatus = TaskStatus.QUEUED
     stage: str | None = None
     gpu_id: str | None = None
@@ -243,7 +248,7 @@ class TaskEvent(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
-    runner_backend: Literal["claude", "pi", "codex"]
+    runner_backends: list[RunnerBackend]
     queue_size: int
     queue_capacity: int
     gpu_workers: list[str]

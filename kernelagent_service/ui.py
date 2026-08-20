@@ -379,17 +379,23 @@ def get_init_inputs():
           </div>
           <div class="field-row">
             <div class="field">
+              <label for="runner">Harness Runner</label>
+              <select id="runner"><option value="claude">Claude Code</option><option value="pi">pi</option><option value="codex">Codex</option></select>
+            </div>
+            <div class="field">
               <label for="language">Kernel 语言</label>
               <select id="language"><option value="triton">Triton</option><option value="cutedsl">CuTe DSL</option></select>
             </div>
+          </div>
+          <div class="field-row">
             <div class="field">
               <label for="rounds">最大优化轮数</label>
               <input id="rounds" type="number" min="1" max="100" value="5">
             </div>
-          </div>
-          <div class="field">
-            <label for="timeout">超时时间 <span class="hint">秒</span></label>
-            <input id="timeout" type="number" min="30" max="86400" value="7200">
+            <div class="field">
+              <label for="timeout">超时时间 <span class="hint">秒</span></label>
+              <input id="timeout" type="number" min="30" max="86400" value="7200">
+            </div>
           </div>
           <div class="field">
             <label for="instructions">额外优化要求 <span class="hint">可选</span></label>
@@ -531,7 +537,8 @@ def get_init_inputs():
         state.health = health;
         const ok = health.status === 'ok';
         $('health-chip').className = `health-chip ${ok ? 'ok' : 'bad'}`;
-        $('health-text').textContent = `${ok ? '服务正常' : '服务降级'} · ${health.runner_backend}`;
+        const runners = (health.runner_backends || []).join(' / ');
+        $('health-text').textContent = `${ok ? '服务正常' : '服务降级'}${runners ? ` · ${runners}` : ''}`;
         $('metric-status').textContent = ok ? 'ONLINE' : 'DEGRADED';
         $('metric-status').style.color = ok ? 'var(--green)' : 'var(--yellow)';
         $('metric-gpus').textContent = health.gpu_workers.length;
@@ -640,6 +647,7 @@ def get_init_inputs():
       button.textContent = '正在提交…';
       const payload = {
         pytorch_code: $('pytorch-code').value,
+        runner_backend: $('runner').value,
         kernel_language: $('language').value,
         max_rounds: Number($('rounds').value),
         timeout_seconds: Number($('timeout').value),
@@ -664,7 +672,7 @@ def get_init_inputs():
     }
 
     async function cancelSelected() {
-      if (!state.selectedId || !window.confirm('确定取消这个任务？运行中的 Codex 及其子进程会被终止。')) return;
+      if (!state.selectedId || !window.confirm('确定取消这个任务？运行中的 runner 及其子进程会被终止。')) return;
       try {
         await api(`/v1/tasks/${encodeURIComponent(state.selectedId)}/cancel`, {method: 'POST'});
         toast('取消请求已提交');

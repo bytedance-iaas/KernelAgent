@@ -1,5 +1,10 @@
 # KernelAgent — Multi‑Agent GPU Kernel Synthesis and Optimization
 
+> **Note:** This repository started from
+> [pytorch-labs/KernelAgent](https://github.com/pytorch-labs/KernelAgent) and has
+> grown into a broader, service-oriented platform for GPU kernel generation,
+> analysis, profiling, and optimization.
+
 KernelAgent turns PyTorch programs into verified Triton kernels and optimize its performance. It was designed around KernelBench workloads and combines:
 
 - Static problem analysis to decide whether to run a lightweight path or a full pipeline

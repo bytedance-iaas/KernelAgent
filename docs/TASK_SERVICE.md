@@ -23,8 +23,8 @@ codegraph init
 pip install -e .
 ```
 
-Install the CLI selected by `KERNEL_AGENT_AGENT` and make it available on
-`PATH`:
+Install every coding-agent CLI you plan to select in task requests and make it
+available on `PATH`:
 
 - `claude` (the default) and `pi` use the Anthropic Messages API. Install pi
   with `npm install -g @earendil-works/pi-coding-agent` when needed. An
@@ -48,8 +48,6 @@ Useful optional settings:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `KERNEL_AGENT_AGENT` | `claude` | Coding agent: `claude`, `pi`, or `codex`. Overridden by `-p`/`--pi` at startup. |
-| `KERNEL_AGENT_RUNNER` | — | Backward-compatible alias used only when `KERNEL_AGENT_AGENT` is unset |
 | `KERNEL_AGENT_CLAUDE_COMMAND` | `claude` | Claude Code executable |
 | `KERNEL_AGENT_CODEX_COMMAND` | `codex` | Codex executable |
 | `KERNEL_AGENT_CODEX_BASE_URL` | `<model-base-url>/v1` | Codex Responses API root |
@@ -84,18 +82,11 @@ kernel-agent-service
 Do not add `--workers 2` (or more). The queue and GPU ownership are local to
 the process.
 
-### Choosing an agent
+### Choosing a runner per task
 
-Claude Code is the default. Pass `-p`/`--pi` (or set `KERNEL_AGENT_AGENT=pi`)
-to run tasks through the [pi coding agent](https://github.com/earendil-works/pi-mono)
-instead:
-
-```bash
-python -m kernelagent_service -p
-
-# Equivalent after editable installation
-kernel-agent-service -p
-```
+The service registers Claude Code, pi, and Codex at startup. Select the harness
+runner with the request's `runner_backend` field; no service restart is needed.
+The default is `claude` when the field is omitted.
 
 pi loads the same skills as Claude Code directly from `KERNEL_AGENT_SKILLS_DIR`
 (pi implements the Agent Skills standard used by `.claude/skills`), so no
@@ -109,13 +100,11 @@ service asks pi in-prompt to end its final message with a fenced JSON code
 block and parses that out of the reply; a run that finishes without one is
 reported as failed.
 
-To run Codex against a self-hosted SGLang Responses endpoint:
+Codex uses the configured self-hosted SGLang Responses endpoint:
 
 ```bash
-export KERNEL_AGENT_AGENT=codex
 export KERNEL_AGENT_MODEL_BASE_URL=http://127.0.0.1:30000
 export KERNEL_AGENT_MODEL=my-sglang-model
-python -m kernelagent_service
 ```
 
 The service derives the provider root as
@@ -131,6 +120,7 @@ curl -sS http://127.0.0.1:8080/v1/tasks \
   -H 'content-type: application/json' \
   -d '{
     "pytorch_code": "import torch\nfrom torch import nn\n\nclass Model(nn.Module):\n    def forward(self, x, y):\n        return x + y\n\ndef get_inputs():\n    return [torch.randn(1048576, device=\"cuda\"), torch.randn(1048576, device=\"cuda\")]\n\ndef get_init_inputs():\n    return []\n",
+    "runner_backend": "claude",
     "kernel_language": "triton",
     "max_rounds": 5
   }'
@@ -147,6 +137,7 @@ Request fields:
 | Field | Required | Default | Meaning |
 |---|---|---|---|
 | `pytorch_code` | yes | — | KernelBench-style PyTorch reference |
+| `runner_backend` | no | `claude` | Harness runner: `claude`, `pi`, or `codex` |
 | `kernel_language` | no | `triton` | Target language: `triton` or `cutedsl` |
 | `test_code` | no | — | Additional Python correctness test |
 | `max_rounds` | no | `5` | Maximum generation/refinement rounds |
