@@ -36,6 +36,7 @@ from kernelagent_service.ui import (
     render_admin_console,
     render_auth_page,
     render_console_access_denied,
+    render_install_page,
     render_task_ui,
 )
 
@@ -207,6 +208,18 @@ def create_app(
                     "script-src 'self' 'unsafe-inline'; "
                     "connect-src 'self'; "
                     "img-src 'self' data:"
+                ),
+            },
+        )
+
+    @app.get("/v1/install", response_class=HTMLResponse, include_in_schema=False)
+    async def install_page() -> HTMLResponse:
+        return HTMLResponse(
+            content=render_install_page(),
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; style-src 'self' 'unsafe-inline'"
                 ),
             },
         )

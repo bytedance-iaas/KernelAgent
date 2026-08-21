@@ -256,6 +256,8 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert '<div class="brand-name">Anvil</div>' in response.text
         assert 'class="console-link" href="/v1/console">Console</a>' in response.text
         assert "创建 Kernel 任务" in response.text
+        assert 'href="/v1/install"' in response.text
+        assert "客户端安装" in response.text
         assert 'id="submission-file"' in response.text
         assert 'accept=".py,.cu,.cpp,.cc,.cxx,.c,.json,.zip,.tar.gz,.tgz"' in response.text
         assert "format is currently not supported" in response.text
@@ -273,6 +275,26 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert "'stdout.txt', 'stderr.txt'" in response.text
         assert "fetch(path" in response.text
         assert "/v1/tasks" in response.text
+
+    asyncio.run(scenario())
+
+
+def test_install_page_describes_cli_and_skills_as_coming_soon(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.get("/v1/install")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.headers["cache-control"] == "no-store"
+        assert "Install the Anvil Client" in response.text
+        assert "One-line installation command coming soon" in response.text
+        assert "Anvil CLI" in response.text
+        assert "Kernel Skills" in response.text
+        assert 'href="/v1/ui"' in response.text
 
     asyncio.run(scenario())
 
