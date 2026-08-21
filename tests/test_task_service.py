@@ -251,11 +251,79 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert "default-src 'self'" in response.headers["content-security-policy"]
         assert "<title>Anvil</title>" in response.text
         assert '<div class="brand-name">Anvil</div>' in response.text
+        assert 'class="console-link" href="/v1/console">Console</a>' in response.text
         assert "创建 Kernel 任务" in response.text
         assert 'id="runner"' in response.text
         assert "runner_backend: $('runner').value" in response.text
         assert "fetch(path" in response.text
         assert "/v1/tasks" in response.text
+
+    asyncio.run(scenario())
+
+
+def test_admin_console_is_served_as_frontend_only_page(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.get("/v1/console")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.headers["cache-control"] == "no-store"
+        assert "default-src 'self'" in response.headers["content-security-policy"]
+        assert "Machine Registry" in response.text
+        assert '<a href="/v1/ui">UI</a>' in response.text
+        assert 'href="/v1/console">Console</a>' in response.text
+        assert 'id="machine-form"' in response.text
+        assert "Machine Information" in response.text
+        assert "Service Dashboard" in response.text
+        assert 'data-view="dashboard"' in response.text
+        assert 'id="dash-users"' in response.text
+        assert 'id="dash-jobs"' in response.text
+        assert "fetch('/v1/console/stats')" in response.text
+        assert 'id="delete-modal"' in response.text
+        assert "Yes, delete" in response.text
+        assert "confirmDelete.addEventListener" in response.text
+        assert "localStorage" in response.text
+        assert "Frontend preview" in response.text
+
+    asyncio.run(scenario())
+
+
+def test_admin_dashboard_reports_users_jobs_and_infrastructure(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner()
+        app = create_app(make_auth_settings(tmp_path), runner)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as admin, httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as general:
+                assert (await admin.post(
+                    "/v1/auth/login",
+                    json={"username": "test_admin", "password": "test-admin-password"},
+                )).status_code == 200
+                assert (await general.post(
+                    "/v1/auth/signup",
+                    json={"username": "dashboard_user", "password": "password-123"},
+                )).status_code == 200
+
+                task_id = await submit(admin, "dashboard")
+                await wait_for_terminal(admin, task_id)
+                response = await admin.get("/v1/console/stats")
+                assert response.status_code == 200
+                payload = response.json()
+                assert payload["users"] == {"total": 2, "admin": 1, "general": 1}
+                assert payload["jobs"]["total"] == 1
+                assert payload["jobs"]["succeeded"] == 1
+                assert payload["jobs"]["active"] == 0
+                assert payload["infrastructure"]["gpu_workers"] == 1
+
+                forbidden = await general.get("/v1/console/stats")
+                assert forbidden.status_code == 403
 
     asyncio.run(scenario())
 
@@ -278,6 +346,7 @@ def test_auth_signup_login_and_role_access(tmp_path: Path) -> None:
             assert admin_login.status_code == 200
             assert admin_login.json()["role"] == "admin"
             assert (await anonymous.get("/v1/ui")).status_code == 200
+            assert (await anonymous.get("/v1/console")).status_code == 200
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
@@ -372,6 +441,7 @@ def test_default_admin_pair_is_created_automatically(tmp_path: Path) -> None:
             assert login.status_code == 200
             assert login.json()["role"] == "admin"
             assert (await client.get("/v1/ui")).status_code == 200
+            assert (await client.get("/v1/console")).status_code == 200
 
         contents = (tmp_path / "users.json").read_text(encoding="utf-8")
         assert '"username": "admin"' in contents

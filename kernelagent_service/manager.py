@@ -139,6 +139,19 @@ class TaskManager:
                 for record in ordered[offset : offset + limit]
             ]
 
+    async def statistics(self) -> dict[str, int]:
+        """Return a consistent snapshot of aggregate task counts."""
+        async with self._lock:
+            counts = {status.value: 0 for status in TaskStatus}
+            for record in self.records.values():
+                counts[record.status.value] += 1
+        counts["total"] = sum(counts.values())
+        counts["active"] = counts["queued"] + counts["running"]
+        counts["unsuccessful"] = (
+            counts["failed"] + counts["timed_out"] + counts["lost"]
+        )
+        return counts
+
     async def cancel(self, task_id: str) -> TaskRecord:
         async with self._lock:
             record = self.records.get(task_id)
