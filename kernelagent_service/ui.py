@@ -28,6 +28,25 @@ def render_console_access_denied() -> str:
     return _CONSOLE_ACCESS_DENIED
 
 
+def render_install_page() -> str:
+    """Return the client installation landing page."""
+    return _INSTALL_PAGE
+
+
+_INSTALL_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Client Installation · Anvil</title>
+  <style>
+    :root{--bg:#edf2f7;--panel:#fff;--line:#d6e0e9;--text:#17212b;--muted:#667585;--accent:#f06431;--green:#168b5b;--shadow:0 20px 58px rgba(45,64,82,.12)}
+    *{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh;color:var(--text);background:radial-gradient(circle at 8% -10%,rgba(240,100,49,.15),transparent 32rem),radial-gradient(circle at 100% 30%,rgba(36,118,200,.1),transparent 30rem),var(--bg);font:14px/1.6 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}.topbar{height:68px;padding:0 30px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:rgba(255,255,255,.88);backdrop-filter:blur(18px)}.brand{display:flex;align-items:center;gap:12px}.mark{width:35px;height:35px;display:grid;place-items:center;border:1px solid rgba(240,100,49,.38);border-radius:10px;color:var(--accent);background:rgba(240,100,49,.08);font:700 16px ui-monospace,monospace}.brand strong{font-size:16px}.back{padding:8px 12px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:12px;font-weight:700}.back:hover{color:var(--text);background:#eef3f7}main{width:min(940px,100%);margin:0 auto;padding:72px 28px 80px}.hero{text-align:center}.eyebrow{margin:0 0 10px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{margin:0;font-size:46px;line-height:1.08;letter-spacing:-.055em}.lead{max-width:650px;margin:18px auto 0;color:var(--muted);font-size:16px}.terminal{margin:38px 0 18px;padding:19px 22px;display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid #263645;border-radius:13px;color:#dbe6ef;background:#17212b;box-shadow:var(--shadow);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.terminal code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prompt{margin-right:10px;color:#6fd49f}.soon{flex:none;padding:5px 9px;border:1px solid rgba(255,255,255,.15);border-radius:999px;color:#f4bd78;background:rgba(244,189,120,.08);font:700 10px Inter,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.06em}.notice{margin:0;color:var(--muted);text-align:center;font-size:12px}.grid{margin-top:48px;display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{padding:25px;border:1px solid var(--line);border-radius:15px;background:linear-gradient(180deg,#fff,#fafbfd);box-shadow:0 12px 34px rgba(45,64,82,.08)}.icon{width:40px;height:40px;margin-bottom:18px;display:grid;place-items:center;border-radius:11px;color:var(--accent);background:rgba(240,100,49,.09);font:700 14px ui-monospace,monospace}.card h2{margin:0;font-size:19px;letter-spacing:-.025em}.card p{margin:9px 0 0;color:var(--muted)}.status{display:inline-block;margin-top:18px;padding:5px 9px;border-radius:999px;color:#94611a;background:#fff4de;font-size:10px;font-weight:800;text-transform:uppercase}.requirements{margin-top:18px;padding:23px 25px;border:1px solid var(--line);border-radius:15px;background:rgba(255,255,255,.7)}.requirements h2{margin:0 0 10px;font-size:16px}.requirements ul{margin:0;padding-left:20px;color:var(--muted)}.requirements li+li{margin-top:5px}@media(max-width:680px){.topbar{padding:0 16px}main{padding:48px 16px 60px}h1{font-size:36px}.grid{grid-template-columns:1fr}.terminal{align-items:flex-start;flex-direction:column}.terminal code{white-space:normal;overflow-wrap:anywhere}}
+  </style>
+</head>
+<body><header class="topbar"><div class="brand"><div class="mark">A</div><strong>Anvil</strong></div><a class="back" href="/v1/ui">← Back to task UI</a></header><main><section class="hero"><p class="eyebrow">Client Setup</p><h1>Install the Anvil Client</h1><p class="lead">Run anvil from your terminal and bring its kernel-generation skills into your local coding-agent workflow.</p></section><div class="terminal"><code><span class="prompt">$</span> One-line installation command coming soon</code><span class="soon">Coming soon</span></div><p class="notice">The installer is still being prepared. Please check back soon—there is no supported one-line command yet.</p><section class="grid"><article class="card"><div class="icon">CLI</div><h2>Anvil CLI</h2><p>Submit workloads, select target hardware, monitor tasks, and download generated artifacts directly from your terminal.</p><span class="status">Installer coming soon</span></article><article class="card"><div class="icon">SK</div><h2>Kernel Skills</h2><p>Install the parser, generator, and optimization skills for supported coding agents and use them from your own workspace.</p><span class="status">Package coming soon</span></article></section><section class="requirements"><h2>Planned Prerequisites</h2><ul><li>Linux or another supported Unix-like shell environment</li><li>Python and a supported coding-agent CLI</li><li>Access credentials for an anvil service</li></ul></section></main></body>
+</html>"""
+
+
 _CONSOLE_ACCESS_DENIED = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -455,7 +474,7 @@ _TASK_UI = r"""<!doctype html>
     .upload-status.error { color: var(--red); }
     .upload-support { margin: 9px 0 0; padding-top: 9px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; line-height: 1.55; }
     .upload-support strong { color: #465565; }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
     .metric {
       min-height: 86px;
       padding: 15px 17px;
@@ -466,6 +485,9 @@ _TASK_UI = r"""<!doctype html>
     .metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
     .metric-value { margin-top: 7px; font-size: 23px; font-weight: 720; letter-spacing: -.04em; }
     .metric-value.text { font-size: 15px; line-height: 1.8; color: var(--green); }
+    .install-metric { min-height:86px;display:flex;align-items:center;justify-content:space-between;color:var(--text);text-decoration:none;transition:transform .16s,border-color .16s,box-shadow .16s; }
+    .install-metric:hover { transform:translateY(-2px);border-color:rgba(240,100,49,.42);box-shadow:0 12px 30px rgba(45,64,82,.1); }
+    .install-arrow { color:var(--accent);font-size:20px; }
 
     .task-panel { overflow: hidden; }
     .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -690,6 +712,7 @@ def get_init_inputs():
 
       <section class="workspace">
         <div class="metrics">
+          <a class="metric install-metric" href="/v1/install"><div><div class="metric-label">Get started</div><div class="metric-value text">客户端安装</div></div><span class="install-arrow">→</span></a>
           <div class="metric"><div class="metric-label">服务状态</div><div id="metric-status" class="metric-value text">连接中</div></div>
           <div class="metric"><div class="metric-label">GPU Workers</div><div id="metric-gpus" class="metric-value">—</div></div>
           <div class="metric"><div class="metric-label">运行中</div><div id="metric-running" class="metric-value">—</div></div>
