@@ -10,6 +10,11 @@ def render_task_ui() -> str:
     return _TASK_UI
 
 
+def render_admin_console() -> str:
+    """Return the frontend-only machine administration console."""
+    return _ADMIN_CONSOLE
+
+
 def render_auth_page(next_path: str = "/v1/ui") -> str:
     """Return the login and signup page."""
     safe_next = json.dumps(
@@ -56,6 +61,203 @@ _AUTH_PAGE = r"""<!doctype html>
   <form id="form"><label for="username">Username</label><input id="username" autocomplete="username" minlength="3" maxlength="32" required><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="8" maxlength="256" required><button id="submit" type="submit">Sign in</button><div id="error" class="error" role="alert"></div></form></section></main>
   <script>'use strict';let mode='login';const auth=document.getElementById('auth'),password=document.getElementById('password'),error=document.getElementById('error'),submit=document.getElementById('submit');document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{mode=tab.dataset.mode;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));auth.classList.toggle('signup',mode==='signup');password.autocomplete=mode==='signup'?'new-password':'current-password';submit.textContent=mode==='signup'?'Create account':'Sign in';error.textContent='';}));document.getElementById('form').addEventListener('submit',async event=>{event.preventDefault();error.textContent='';submit.disabled=true;try{const response=await fetch('/v1/auth/'+mode,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:password.value})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Unable to continue.');window.location.assign(__NEXT_PATH__);}catch(e){error.textContent=e.message;}finally{submit.disabled=false;}});</script>
 </body></html>"""
+
+
+_ADMIN_CONSOLE = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Machine Admin · Anvil</title>
+  <style>
+    :root { --bg:#edf2f7; --panel:#fff; --soft:#f7f9fb; --line:#dbe3eb; --text:#17212b; --muted:#667585; --subtle:#8d99a6; --accent:#f06431; --green:#168b5b; --red:#c93649; --shadow:0 18px 48px rgba(45,64,82,.1); }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:320px; min-height:100vh; color:var(--text); background:radial-gradient(circle at 8% -10%,rgba(240,100,49,.14),transparent 30rem),radial-gradient(circle at 100% 10%,rgba(36,118,200,.1),transparent 28rem),var(--bg); font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    button,input { font:inherit; }
+    .topbar { height:68px; padding:0 30px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); background:rgba(255,255,255,.86); backdrop-filter:blur(18px); }
+    .brand,.nav { display:flex; align-items:center; gap:12px; }
+    .mark { width:34px; height:34px; display:grid; place-items:center; border:1px solid rgba(240,100,49,.42); border-radius:10px; color:var(--accent); background:rgba(240,100,49,.09); font:700 15px ui-monospace,monospace; }
+    .brand strong { display:block; font-size:16px; letter-spacing:-.02em; }
+    .brand small { display:block; color:var(--muted); }
+    .nav a,.nav button { padding:7px 11px; border:0; border-radius:8px; color:var(--muted); text-decoration:none; font:650 12px inherit; background:transparent; cursor:pointer; }
+    .nav a:hover { background:#eef2f6; color:var(--text); }
+    .nav .active { color:var(--accent); background:rgba(240,100,49,.08); }
+    main { width:min(1400px,100%); margin:0 auto; padding:38px 28px 60px; }
+    .console-shell { display:grid; grid-template-columns:220px minmax(0,1fr); gap:28px; align-items:start; }
+    .side-panel { position:sticky; top:28px; padding:10px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.92); box-shadow:var(--shadow); }
+    .side-title { padding:9px 10px 12px; color:var(--subtle); font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+    .side-item { width:100%; padding:11px 12px; display:flex; align-items:center; gap:11px; border:0; border-radius:9px; color:var(--muted); background:transparent; cursor:pointer; text-align:left; font-weight:700; }
+    .side-item:hover { color:var(--text); background:#f1f5f8; }
+    .side-item.active { color:var(--accent); background:rgba(240,100,49,.09); }
+    .side-icon { width:25px; height:25px; display:grid; place-items:center; border:1px solid currentColor; border-radius:7px; font:700 11px ui-monospace,monospace; opacity:.75; }
+    .console-view[hidden] { display:none; }
+    .hero { display:flex; justify-content:space-between; align-items:end; gap:24px; margin-bottom:28px; }
+    .eyebrow { margin:0 0 7px; color:var(--accent); font-size:10px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:0; font-size:32px; letter-spacing:-.045em; }
+    .hero p { max-width:600px; margin:9px 0 0; color:var(--muted); }
+    .dummy { flex:none; padding:7px 11px; border:1px solid #e8c395; border-radius:999px; color:#8c5c17; background:#fff8e9; font-size:11px; font-weight:700; }
+    .layout { display:grid; grid-template-columns:340px minmax(0,1fr); gap:22px; align-items:start; }
+    .panel { overflow:hidden; border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg,#fff,#fafbfd); box-shadow:var(--shadow); }
+    .panel-head { padding:18px 20px; border-bottom:1px solid var(--line); }
+    .panel-head h2 { margin:0; font-size:16px; }
+    .panel-head p { margin:5px 0 0; color:var(--muted); font-size:12px; }
+    form { padding:20px; }
+    label { display:block; margin-bottom:8px; color:#455464; font-size:12px; font-weight:700; }
+    input { width:100%; height:42px; padding:0 12px; border:1px solid #c8d3dd; border-radius:9px; color:var(--text); outline:none; background:#fff; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    input:focus { border-color:rgba(240,100,49,.7); box-shadow:0 0 0 3px rgba(240,100,49,.09); }
+    .error { min-height:21px; margin:6px 0 10px; color:var(--red); font-size:11px; }
+    .btn { min-height:39px; padding:8px 13px; border:1px solid #cbd5df; border-radius:9px; color:var(--text); background:#eef3f7; cursor:pointer; font-weight:700; }
+    .btn:hover { background:#e5ebf1; }
+    .primary { width:100%; border-color:#ef784c; color:#fff; background:linear-gradient(135deg,#ef7b45,var(--accent)); box-shadow:0 8px 20px rgba(240,100,49,.18); }
+    .primary:hover { background:linear-gradient(135deg,#f28552,#e95926); }
+    .stats { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:14px; }
+    .stat { padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--soft); }
+    .stat span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+    .stat strong { display:block; margin-top:4px; font-size:20px; }
+    .list-head { padding:17px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
+    .list-head h2 { margin:0; font-size:16px; }
+    .count { color:var(--muted); font-size:12px; }
+    .machine { min-height:73px; padding:14px 20px; display:grid; grid-template-columns:minmax(180px,1fr) 120px 110px 40px; gap:16px; align-items:center; border-bottom:1px solid var(--line); }
+    .machine:last-child { border-bottom:0; }
+    .ip { font:700 13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .meta { margin-top:4px; color:var(--subtle); font-size:11px; }
+    .status { width:max-content; padding:4px 8px; border:1px solid rgba(22,139,91,.22); border-radius:999px; color:var(--green); background:rgba(22,139,91,.07); font-size:10px; font-weight:800; text-transform:uppercase; }
+    .role { color:var(--muted); font-size:12px; }
+    .delete { width:34px; height:34px; border:1px solid transparent; border-radius:8px; color:var(--subtle); background:transparent; cursor:pointer; font-size:19px; line-height:1; }
+    .delete:hover { border-color:rgba(201,54,73,.25); color:var(--red); background:rgba(201,54,73,.06); }
+    .empty { padding:70px 20px; color:var(--muted); text-align:center; }
+    .empty strong { display:block; margin-bottom:5px; color:var(--text); }
+    .toast { position:fixed; right:24px; bottom:24px; padding:11px 15px; border:1px solid var(--line); border-radius:10px; background:#fff; box-shadow:var(--shadow); opacity:0; transform:translateY(8px); pointer-events:none; transition:.2s; }
+    .toast.show { opacity:1; transform:none; }
+    .modal-backdrop { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:20px; background:rgba(23,33,43,.48); backdrop-filter:blur(3px); opacity:0; visibility:hidden; transition:opacity .18s,visibility .18s; }
+    .modal-backdrop.open { opacity:1; visibility:visible; }
+    .modal { width:min(430px,100%); padding:24px; border:1px solid var(--line); border-radius:15px; background:#fff; box-shadow:0 24px 70px rgba(23,33,43,.25); transform:translateY(8px) scale(.98); transition:transform .18s; }
+    .modal-backdrop.open .modal { transform:none; }
+    .modal-icon { width:42px; height:42px; margin-bottom:16px; display:grid; place-items:center; border-radius:12px; color:var(--red); background:rgba(201,54,73,.08); font-size:22px; font-weight:800; }
+    .modal h2 { margin:0 0 8px; font-size:19px; letter-spacing:-.02em; }
+    .modal p { margin:0; color:var(--muted); }
+    .modal-ip { display:block; margin:13px 0 0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:var(--soft); font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .modal-actions { margin-top:22px; display:flex; justify-content:flex-end; gap:9px; }
+    .confirm-delete { border-color:var(--red); color:#fff; background:var(--red); }
+    .confirm-delete:hover { background:#ad293b; }
+    .dashboard-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+    .dashboard-card { min-height:132px; padding:20px; border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg,#fff,#fafbfd); box-shadow:var(--shadow); }
+    .dashboard-label { color:var(--muted); font-size:11px; font-weight:750; letter-spacing:.06em; text-transform:uppercase; }
+    .dashboard-value { margin-top:12px; font-size:34px; font-weight:760; letter-spacing:-.05em; }
+    .dashboard-meta { margin-top:5px; color:var(--subtle); font-size:11px; }
+    .dashboard-panels { margin-top:16px; display:grid; grid-template-columns:1fr 1.4fr; gap:16px; }
+    .dashboard-panel { padding:20px; }
+    .dashboard-panel h2 { margin:0; font-size:16px; }
+    .dashboard-panel-copy { margin:5px 0 18px; color:var(--muted); font-size:12px; }
+    .breakdown-row { margin-top:14px; }
+    .breakdown-head { display:flex; align-items:center; justify-content:space-between; gap:14px; color:var(--muted); font-size:12px; }
+    .breakdown-head strong { color:var(--text); }
+    .track { height:7px; margin-top:7px; overflow:hidden; border-radius:999px; background:#e8eef3; }
+    .fill { width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),#f58a55); transition:width .3s; }
+    .fill.blue { background:linear-gradient(90deg,#2476c8,#60a4e8); }
+    .job-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+    .job-cell { padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--soft); }
+    .job-cell span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; }
+    .job-cell strong { display:block; margin-top:4px; font-size:20px; }
+    .dashboard-refresh { border-color:rgba(240,100,49,.3); color:var(--accent); background:rgba(240,100,49,.06); }
+    @media(max-width:1100px){ .dashboard-grid{grid-template-columns:repeat(2,1fr)} }
+    @media(max-width:900px){ .console-shell{grid-template-columns:1fr}.side-panel{position:static;display:flex;align-items:center}.side-title{padding:9px 12px}.side-item{width:auto}.dashboard-panels{grid-template-columns:1fr} }
+    @media(max-width:760px){ .topbar{padding:0 16px}.brand small{display:none}.nav a:first-child{display:none} main{padding:24px 16px}.side-title{display:none}.side-item{flex:1;justify-content:center}.hero{align-items:start;flex-direction:column}.layout{grid-template-columns:1fr}.machine{grid-template-columns:1fr 90px 34px}.machine .role{display:none}.dashboard-grid{grid-template-columns:1fr 1fr}.job-grid{grid-template-columns:repeat(2,1fr)} }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark">A</div><div><strong>Anvil</strong><small>Administration</small></div></div>
+    <nav class="nav"><a href="/v1/ui">UI</a><a class="active" href="/v1/console">Console</a><button type="button" onclick="fetch('/v1/auth/logout',{method:'POST'}).then(()=>location.assign('/v1/auth'))">Sign out</button></nav>
+  </header>
+  <main>
+    <div class="console-shell">
+      <aside class="side-panel" aria-label="Console sections">
+        <div class="side-title">Information</div>
+        <button class="side-item active" type="button" data-view="machines" aria-selected="true"><span class="side-icon">M</span>Machine Information</button>
+        <button class="side-item" type="button" data-view="dashboard" aria-selected="false"><span class="side-icon">D</span>Dashboard</button>
+      </aside>
+      <div>
+        <section id="machines-view" class="console-view">
+          <section class="hero"><div><p class="eyebrow">Infrastructure</p><h1>Machine Registry</h1><p>Add and remove worker machines available to anvil. This preview stores changes only in your browser.</p></div><span class="dummy">Frontend preview</span></section>
+          <div class="layout">
+            <section class="panel">
+              <div class="panel-head"><h2>Add a Machine</h2><p>Enter an IPv4 or IPv6 address.</p></div>
+              <form id="machine-form" novalidate>
+                <label for="machine-ip">Machine IP address</label>
+                <input id="machine-ip" name="ip" placeholder="10.0.0.42" autocomplete="off" spellcheck="false">
+                <div id="ip-error" class="error" aria-live="polite"></div>
+                <button class="btn primary" type="submit">Add machine</button>
+                <div class="stats"><div class="stat"><span>Registered</span><strong id="registered">0</strong></div><div class="stat"><span>Available</span><strong id="available">0</strong></div></div>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="list-head"><h2>Registered Machines</h2><span class="count" id="count"></span></div>
+              <div id="machine-list"></div>
+            </section>
+          </div>
+        </section>
+        <section id="dashboard-view" class="console-view" hidden>
+          <section class="hero"><div><p class="eyebrow">Monitor</p><h1>Service Dashboard</h1><p>Monitor registered users, submitted jobs, queue activity, and execution outcomes.</p></div><button id="dashboard-refresh" class="btn dashboard-refresh" type="button">Refresh data</button></section>
+          <div class="dashboard-grid">
+            <article class="dashboard-card"><div class="dashboard-label">Registered Users</div><div id="dash-users" class="dashboard-value">—</div><div id="dash-user-meta" class="dashboard-meta">Loading account data</div></article>
+            <article class="dashboard-card"><div class="dashboard-label">Submitted Jobs</div><div id="dash-jobs" class="dashboard-value">—</div><div class="dashboard-meta">All recorded submissions</div></article>
+            <article class="dashboard-card"><div class="dashboard-label">Active Jobs</div><div id="dash-active" class="dashboard-value">—</div><div id="dash-active-meta" class="dashboard-meta">Queued and running</div></article>
+            <article class="dashboard-card"><div class="dashboard-label">Success Rate</div><div id="dash-success-rate" class="dashboard-value">—</div><div id="dash-updated" class="dashboard-meta">Waiting for refresh</div></article>
+          </div>
+          <div class="dashboard-panels">
+            <section class="panel dashboard-panel"><h2>User Roles</h2><p class="dashboard-panel-copy">Registered accounts by access level.</p><div class="breakdown-row"><div class="breakdown-head"><span>General Users</span><strong id="dash-general">—</strong></div><div class="track"><div id="dash-general-bar" class="fill"></div></div></div><div class="breakdown-row"><div class="breakdown-head"><span>Administrators</span><strong id="dash-admin">—</strong></div><div class="track"><div id="dash-admin-bar" class="fill blue"></div></div></div></section>
+            <section class="panel dashboard-panel"><h2>Job Lifecycle</h2><p class="dashboard-panel-copy">Current totals across persisted and in-memory jobs.</p><div class="job-grid"><div class="job-cell"><span>Queued</span><strong id="dash-queued">—</strong></div><div class="job-cell"><span>Running</span><strong id="dash-running">—</strong></div><div class="job-cell"><span>Succeeded</span><strong id="dash-succeeded">—</strong></div><div class="job-cell"><span>Failed</span><strong id="dash-failed">—</strong></div><div class="job-cell"><span>Canceled</span><strong id="dash-canceled">—</strong></div><div class="job-cell"><span>GPU Workers</span><strong id="dash-gpus">—</strong></div></div></section>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <div id="delete-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <div class="modal">
+      <div class="modal-icon" aria-hidden="true">!</div>
+      <h2 id="delete-title">Delete This Machine?</h2>
+      <p id="delete-description">This will remove the machine from the local registry.</p>
+      <span id="delete-ip" class="modal-ip"></span>
+      <div class="modal-actions"><button id="cancel-delete" class="btn" type="button">No, keep it</button><button id="confirm-delete" class="btn confirm-delete" type="button">Yes, delete</button></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script>
+    (() => {
+      const seed = [{ip:'10.24.0.18',added:'Preview machine'},{ip:'10.24.0.27',added:'Preview machine'},{ip:'fd12:3456:789a::8',added:'Preview machine'}];
+      let machines;
+      try { machines = JSON.parse(localStorage.getItem('kernelagent.console.machines')) || seed; } catch (_) { machines = seed; }
+      const list = document.getElementById('machine-list'); const input = document.getElementById('machine-ip'); const error = document.getElementById('ip-error');
+      const modal = document.getElementById('delete-modal'); const confirmDelete = document.getElementById('confirm-delete'); const cancelDelete = document.getElementById('cancel-delete'); let pendingDelete = null; let deleteTrigger = null;
+      document.querySelectorAll('.side-item').forEach(button => button.addEventListener('click', () => { const view=button.dataset.view; document.querySelectorAll('.side-item').forEach(item => { const active=item===button; item.classList.toggle('active',active); item.setAttribute('aria-selected',String(active)); }); document.getElementById('machines-view').hidden=view!=='machines'; document.getElementById('dashboard-view').hidden=view!=='dashboard'; if(view==='dashboard')loadDashboard(); }));
+      const escapeHtml = value => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const validIp = value => { if (value.includes(':')) return /^[0-9a-f:]+$/i.test(value) && value.includes(':') && value.length <= 45; const p=value.split('.'); return p.length===4 && p.every(x => /^\d{1,3}$/.test(x) && Number(x)<=255 && String(Number(x))===x); };
+      const save = () => { try { localStorage.setItem('kernelagent.console.machines', JSON.stringify(machines)); } catch (_) {} };
+      const toast = message => { const el=document.getElementById('toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove('show'),2200); };
+      const setText = (id,value) => { document.getElementById(id).textContent=value; };
+      const loadDashboard = async () => { try { const response=await fetch('/v1/console/stats'); if(!response.ok)throw new Error(`HTTP ${response.status}`); const data=await response.json(); const users=data.users,jobs=data.jobs,infra=data.infrastructure; setText('dash-users',users.total); setText('dash-user-meta',`${users.general} general · ${users.admin} admin`); setText('dash-jobs',jobs.total); setText('dash-active',jobs.active); setText('dash-active-meta',`${jobs.queued} queued · ${jobs.running} running`); const decided=jobs.succeeded+jobs.unsuccessful; setText('dash-success-rate',decided?`${Math.round(jobs.succeeded/decided*100)}%`:'—'); setText('dash-updated',`Updated ${new Date().toLocaleTimeString()}`); setText('dash-general',users.general); setText('dash-admin',users.admin); document.getElementById('dash-general-bar').style.width=`${users.total?users.general/users.total*100:0}%`; document.getElementById('dash-admin-bar').style.width=`${users.total?users.admin/users.total*100:0}%`; setText('dash-queued',jobs.queued); setText('dash-running',jobs.running); setText('dash-succeeded',jobs.succeeded); setText('dash-failed',jobs.unsuccessful); setText('dash-canceled',jobs.canceled); setText('dash-gpus',infra.gpu_workers); } catch(error) { toast(`Dashboard refresh failed: ${error.message}`); } };
+      const render = () => {
+        document.getElementById('registered').textContent=machines.length; document.getElementById('available').textContent=machines.length; document.getElementById('count').textContent=`${machines.length} machine${machines.length===1?'':'s'}`;
+        if (!machines.length) { list.innerHTML='<div class="empty"><strong>No machines registered</strong>Add a machine by IP to get started.</div>'; return; }
+        list.innerHTML=machines.map((m,i)=>`<div class="machine"><div><div class="ip">${escapeHtml(m.ip)}</div><div class="meta">${escapeHtml(m.added || 'Added locally')}</div></div><span class="status">Available</span><span class="role">GPU worker</span><button class="delete" data-index="${i}" aria-label="Delete ${escapeHtml(m.ip)}" title="Delete machine">×</button></div>`).join('');
+      };
+      document.getElementById('machine-form').addEventListener('submit', event => { event.preventDefault(); const ip=input.value.trim().toLowerCase(); error.textContent=''; if(!validIp(ip)){ error.textContent='Enter a valid IPv4 or IPv6 address.'; input.focus(); return; } if(machines.some(m=>m.ip.toLowerCase()===ip)){ error.textContent='This machine is already registered.'; input.focus(); return; } machines.unshift({ip,added:'Added just now · browser only'}); save(); render(); input.value=''; toast(`Added ${ip}`); });
+      const closeDeleteModal = () => { modal.classList.remove('open'); pendingDelete=null; if(deleteTrigger){ deleteTrigger.focus(); deleteTrigger=null; } };
+      list.addEventListener('click', event => { const button=event.target.closest('.delete'); if(!button)return; pendingDelete=Number(button.dataset.index); deleteTrigger=button; document.getElementById('delete-ip').textContent=machines[pendingDelete].ip; modal.classList.add('open'); cancelDelete.focus(); });
+      cancelDelete.addEventListener('click', closeDeleteModal);
+      modal.addEventListener('click', event => { if(event.target===modal) closeDeleteModal(); });
+      document.addEventListener('keydown', event => { if(event.key==='Escape' && modal.classList.contains('open')) closeDeleteModal(); });
+      confirmDelete.addEventListener('click', () => { if(pendingDelete===null)return; const removed=machines[pendingDelete]; machines.splice(pendingDelete,1); save(); render(); modal.classList.remove('open'); pendingDelete=null; deleteTrigger=null; toast(`Removed ${removed.ip}`); });
+      document.getElementById('dashboard-refresh').addEventListener('click',loadDashboard);
+      render();
+      loadDashboard();
+      window.setInterval(loadDashboard,10000);
+    })();
+  </script>
+</body>
+</html>"""
 
 
 _TASK_UI = r"""<!doctype html>
@@ -145,6 +347,8 @@ _TASK_UI = r"""<!doctype html>
     .health-chip.ok .health-dot { background: var(--green); box-shadow: 0 0 10px rgba(66, 211, 146, .75); }
     .health-chip.bad .health-dot { background: var(--red); }
     .top-actions { display:flex; align-items:center; gap:9px; }
+    .console-link { padding:7px 11px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:#fff; text-decoration:none; font-size:12px; font-weight:700; }
+    .console-link:hover { border-color:rgba(240,100,49,.42); color:var(--accent-2); background:rgba(240,100,49,.05); }
     .signout { padding:7px 10px; border:0; border-radius:8px; color:var(--muted); background:transparent; cursor:pointer; font-size:12px; font-weight:700; }
     .signout:hover { color:var(--text); background:#eef3f7; }
 
@@ -399,7 +603,7 @@ _TASK_UI = r"""<!doctype html>
           <div class="brand-sub">GPU Kernel Generation & Optimization</div>
         </div>
       </div>
-      <div class="top-actions"><div id="health-chip" class="health-chip">
+      <div class="top-actions"><a class="console-link" href="/v1/console">Console</a><div id="health-chip" class="health-chip">
         <span class="health-dot"></span>
         <span id="health-text">正在连接服务</span>
       </div><button class="signout" type="button" onclick="fetch('/v1/auth/logout',{method:'POST'}).then(()=>location.assign('/v1/auth'))">退出</button></div>

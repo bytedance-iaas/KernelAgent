@@ -32,6 +32,7 @@ from kernelagent_service.models import (
 from kernelagent_service.runner import AgentRunner, create_runner
 from kernelagent_service.storage import TaskStore
 from kernelagent_service.ui import (
+    render_admin_console,
     render_auth_page,
     render_console_access_denied,
     render_task_ui,
@@ -192,6 +193,34 @@ def create_app(
                 ),
             },
         )
+
+    @app.get("/v1/console", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_console() -> HTMLResponse:
+        return HTMLResponse(
+            content=render_admin_console(),
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; "
+                    "style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'; "
+                    "connect-src 'self'; "
+                    "img-src 'self' data:"
+                ),
+            },
+        )
+
+    @app.get("/v1/console/stats", include_in_schema=False)
+    async def console_stats() -> dict:
+        return {
+            "users": users.statistics(),
+            "jobs": await manager.statistics(),
+            "infrastructure": {
+                "gpu_workers": len(settings.gpu_ids),
+                "queue_size": manager.queue.qsize(),
+                "queue_capacity": settings.queue_capacity,
+            },
+        }
 
     @app.get("/healthz", response_model=HealthResponse)
     async def health() -> HealthResponse:
