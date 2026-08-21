@@ -62,6 +62,11 @@ Useful optional settings:
 | `KERNEL_AGENT_MAX_ARTIFACT_BYTES` | `52428800` | Per-file artifact limit |
 | `KERNEL_AGENT_SERVICE_HOST` | `127.0.0.1` | Listen address |
 | `KERNEL_AGENT_SERVICE_PORT` | `8080` | Listen port |
+| `KERNEL_AGENT_AUTH_ENABLED` | `1` | Require login for the UI and task API |
+| `KERNEL_AGENT_USERS_FILE` | `.kernel_agent_service/users.json` | Local credential and role file |
+| `KERNEL_AGENT_SESSION_TTL_SECONDS` | `86400` | Signed login-cookie lifetime |
+| `KERNEL_AGENT_ADMIN_USERNAME` | `admin` | Provisioned administrator username |
+| `KERNEL_AGENT_ADMIN_PASSWORD` | `kernelagent-admin` | Provisioned administrator password |
 | `KERNEL_AGENT_PI_COMMAND` | `pi` | pi executable (only used when the agent is `pi`) |
 | `KERNEL_AGENT_PI_CONTEXT_WINDOW` | `200000` | Context window (tokens) advertised to pi for the gateway model |
 | `KERNEL_AGENT_PI_MAX_TOKENS` | `16384` | Max output tokens advertised to pi for the gateway model |
@@ -81,6 +86,39 @@ kernel-agent-service
 
 Do not add `--workers 2` (or more). The queue and GPU ownership are local to
 the process.
+
+### Accounts and roles
+
+Open `/v1/ui` in a browser. On a fresh installation, it redirects to the
+login/signup page. Every self-service signup is assigned the `general` role
+and succeeds when its username is unique and its password meets the minimum
+length. General users can access the task UI and task API, while admins can
+also access `/v1/console`.
+
+On first startup the service creates a default admin with username `admin` and
+password `kernelagent-admin`. The login page is shared, so the service
+determines the role from the matching username and password; there is no admin
+signup choice. Override the pair before a non-local deployment:
+
+```bash
+export KERNEL_AGENT_ADMIN_USERNAME=my-admin
+export KERNEL_AGENT_ADMIN_PASSWORD='use-a-long-private-password'
+```
+
+The user file contains usernames, roles, salted PBKDF2 password hashes, and a
+random session-signing key. It is created with owner-only permissions. Back it
+up like other service state, and never commit it. To use the API from `curl`,
+log in with a cookie jar first:
+
+```bash
+curl -c cookies.txt http://127.0.0.1:8080/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"my-user","password":"my-password"}'
+curl -b cookies.txt http://127.0.0.1:8080/v1/tasks
+```
+
+Authentication can be disabled for isolated development with
+`KERNEL_AGENT_AUTH_ENABLED=0`.
 
 ### Choosing a runner per task
 

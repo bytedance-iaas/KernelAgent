@@ -65,6 +65,11 @@ class ServiceSettings:
     max_artifacts: int = 500
     host: str = "127.0.0.1"
     port: int = 8080
+    authentication_enabled: bool = True
+    users_file: Path | None = None
+    session_ttl_seconds: int = 86_400
+    admin_username: str = "admin"
+    admin_password: str = "kernelagent-admin"
 
     @classmethod
     def from_env(cls) -> "ServiceSettings":
@@ -143,4 +148,17 @@ class ServiceSettings:
             max_artifacts=_env_int("KERNEL_AGENT_MAX_ARTIFACTS", 500),
             host=os.getenv("KERNEL_AGENT_SERVICE_HOST", "127.0.0.1"),
             port=_env_int("KERNEL_AGENT_SERVICE_PORT", 8080),
+            authentication_enabled=os.getenv("KERNEL_AGENT_AUTH_ENABLED", "1").lower()
+            not in {"0", "false", "no"},
+            users_file=Path(
+                os.getenv(
+                    "KERNEL_AGENT_USERS_FILE",
+                    str(repo_root / ".kernel_agent_service" / "users.json"),
+                )
+            ).expanduser(),
+            session_ttl_seconds=_env_int("KERNEL_AGENT_SESSION_TTL_SECONDS", 86_400),
+            admin_username=os.getenv("KERNEL_AGENT_ADMIN_USERNAME", "admin"),
+            admin_password=os.getenv(
+                "KERNEL_AGENT_ADMIN_PASSWORD", "kernelagent-admin"
+            ),
         )

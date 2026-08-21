@@ -124,6 +124,18 @@ def make_settings(
         gpu_ids=gpu_ids,
         queue_capacity=10,
         default_timeout_seconds=30,
+        authentication_enabled=False,
+        users_file=tmp_path / "users.json",
+    )
+
+
+def make_auth_settings(tmp_path: Path) -> ServiceSettings:
+    return replace(
+        make_settings(tmp_path),
+        authentication_enabled=True,
+        users_file=tmp_path / "users.json",
+        admin_username="test_admin",
+        admin_password="test-admin-password",
     )
 
 
@@ -237,12 +249,133 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert response.headers["content-type"].startswith("text/html")
         assert response.headers["cache-control"] == "no-store"
         assert "default-src 'self'" in response.headers["content-security-policy"]
-        assert "KernelAgent Console" in response.text
+        assert "<title>Anvil</title>" in response.text
+        assert '<div class="brand-name">Anvil</div>' in response.text
         assert "创建 Kernel 任务" in response.text
         assert 'id="runner"' in response.text
         assert "runner_backend: $('runner').value" in response.text
         assert "fetch(path" in response.text
         assert "/v1/tasks" in response.text
+
+    asyncio.run(scenario())
+
+
+def test_auth_signup_login_and_role_access(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_auth_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as anonymous:
+            ui = await anonymous.get("/v1/ui", follow_redirects=False)
+            assert ui.status_code == 303
+            assert ui.headers["location"].startswith("/v1/auth")
+            assert (await anonymous.get("/v1/tasks")).status_code == 401
+
+            admin_login = await anonymous.post(
+                "/v1/auth/login",
+                json={"username": "test_admin", "password": "test-admin-password"},
+            )
+            assert admin_login.status_code == 200
+            assert admin_login.json()["role"] == "admin"
+            assert (await anonymous.get("/v1/ui")).status_code == 200
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as general:
+            second = await general.post(
+                "/v1/auth/signup", json={"username": "general_user", "password": "password-456"}
+            )
+            assert second.status_code == 200
+            assert second.json()["role"] == "general"
+            assert (await general.get("/v1/ui")).status_code == 200
+            console = await general.get("/v1/console")
+            assert console.status_code == 403
+            assert console.headers["content-type"].startswith("text/html")
+            assert "Only admin users can access the console" in console.text
+            assert 'href="/v1/ui"' in console.text
+
+            logout = await general.post("/v1/auth/logout")
+            assert logout.status_code == 200
+            assert (await general.get("/v1/ui", follow_redirects=False)).status_code == 303
+
+            bad_login = await general.post(
+                "/v1/auth/login", json={"username": "general_user", "password": "wrong-password"}
+            )
+            assert bad_login.status_code == 401
+            login = await general.post(
+                "/v1/auth/login", json={"username": "general_user", "password": "password-456"}
+            )
+            assert login.status_code == 200
+
+        stored = json.loads((tmp_path / "users.json").read_text(encoding="utf-8"))
+        assert {item["role"] for item in stored["users"]} == {"admin", "general"}
+        contents = (tmp_path / "users.json").read_text(encoding="utf-8")
+        assert "test-admin-password" not in contents
+        assert "password-456" not in contents
+
+    asyncio.run(scenario())
+
+
+def test_auth_rejects_duplicate_and_invalid_signup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_auth_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            weak = await client.post(
+                "/v1/auth/signup", json={"username": "valid_user", "password": "short"}
+            )
+            assert weak.status_code == 400
+            assert (await client.post(
+                "/v1/auth/signup", json={"username": "valid_user", "password": "long-enough"}
+            )).status_code == 200
+            duplicate = await client.post(
+                "/v1/auth/signup", json={"username": "VALID_USER", "password": "another-pass"}
+            )
+            assert duplicate.status_code == 400
+
+    asyncio.run(scenario())
+
+
+def test_first_self_signup_is_general_with_provisioned_admin(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_auth_settings(tmp_path), FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            signup = await client.post(
+                "/v1/auth/signup",
+                json={"username": "first_user", "password": "password-123"},
+            )
+            assert signup.status_code == 200
+            assert signup.json()["role"] == "general"
+            assert (await client.get("/v1/console")).status_code == 403
+
+    asyncio.run(scenario())
+
+
+def test_default_admin_pair_is_created_automatically(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = replace(
+            make_settings(tmp_path),
+            authentication_enabled=True,
+            users_file=tmp_path / "users.json",
+        )
+        app = create_app(settings, FakeRunner())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            login = await client.post(
+                "/v1/auth/login",
+                json={"username": "admin", "password": "kernelagent-admin"},
+            )
+            assert login.status_code == 200
+            assert login.json()["role"] == "admin"
+            assert (await client.get("/v1/ui")).status_code == 200
+
+        contents = (tmp_path / "users.json").read_text(encoding="utf-8")
+        assert '"username": "admin"' in contents
+        assert "kernelagent-admin" not in contents
 
     asyncio.run(scenario())
 

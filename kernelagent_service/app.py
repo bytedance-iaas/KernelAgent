@@ -9,8 +9,9 @@ from dataclasses import replace
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from kernelagent_service.auth import AuthError, UserStore
 from kernelagent_service.config import ServiceSettings
 from kernelagent_service.manager import (
     NoGpuWorkersError,
@@ -30,7 +31,11 @@ from kernelagent_service.models import (
 )
 from kernelagent_service.runner import AgentRunner, create_runner
 from kernelagent_service.storage import TaskStore
-from kernelagent_service.ui import render_task_ui
+from kernelagent_service.ui import (
+    render_auth_page,
+    render_console_access_denied,
+    render_task_ui,
+)
 
 
 def create_app(
@@ -61,6 +66,13 @@ def create_app(
         max_artifacts=settings.max_artifacts,
     )
     manager = TaskManager(settings, runners, store)
+    users = UserStore(
+        settings.users_file
+        or settings.repo_root / ".kernel_agent_service" / "users.json",
+        settings.session_ttl_seconds,
+    )
+    if settings.authentication_enabled:
+        users.provision_admin(settings.admin_username, settings.admin_password)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -76,6 +88,94 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.task_manager = manager
+    app.state.user_store = users
+
+    public_paths = {"/healthz", "/v1/auth", "/v1/auth/login", "/v1/auth/signup"}
+
+    @app.middleware("http")
+    async def authenticate_request(request: Request, call_next):
+        if not settings.authentication_enabled or request.url.path in public_paths:
+            return await call_next(request)
+        user = users.read_session(request.cookies.get("kernelagent_session"))
+        if user is None:
+            if request.url.path in {"/v1/ui", "/v1/console", "/v1/install"}:
+                target = quote(request.url.path, safe="/")
+                return RedirectResponse(f"/v1/auth?next={target}", status_code=303)
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        request.state.user = user
+        if request.url.path.startswith("/v1/console") and user.role != "admin":
+            return HTMLResponse(
+                render_console_access_denied(),
+                status_code=403,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Content-Security-Policy": (
+                        "default-src 'self'; style-src 'self' 'unsafe-inline'"
+                    ),
+                },
+            )
+        return await call_next(request)
+
+    @app.get("/v1/auth", response_class=HTMLResponse, include_in_schema=False)
+    async def auth_page(
+        request: Request, next: str = Query(default="/v1/ui")
+    ) -> Response:
+        if settings.authentication_enabled:
+            user = users.read_session(request.cookies.get("kernelagent_session"))
+            if user is not None:
+                return RedirectResponse("/v1/ui", status_code=303)
+        return HTMLResponse(
+            render_auth_page(next),
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'"
+                ),
+            },
+        )
+
+    async def establish_session(request: Request, signup: bool) -> JSONResponse:
+        try:
+            payload = await request.json()
+            username = payload.get("username", "")
+            password = payload.get("password", "")
+            if not isinstance(username, str) or not isinstance(password, str):
+                raise AuthError("Username and password are required.")
+            user = (
+                users.signup(username, password)
+                if signup
+                else users.authenticate(username, password)
+            )
+            if user is None:
+                raise AuthError("Invalid username or password.")
+        except (AuthError, KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400 if signup else 401, detail=str(exc)) from exc
+        response = JSONResponse({"username": user.username, "role": user.role})
+        response.set_cookie(
+            "kernelagent_session",
+            users.issue_session(user),
+            max_age=settings.session_ttl_seconds,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return response
+
+    @app.post("/v1/auth/login", include_in_schema=False)
+    async def login(request: Request) -> JSONResponse:
+        return await establish_session(request, False)
+
+    @app.post("/v1/auth/signup", include_in_schema=False)
+    async def signup(request: Request) -> JSONResponse:
+        return await establish_session(request, True)
+
+    @app.post("/v1/auth/logout", include_in_schema=False)
+    async def logout() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie("kernelagent_session", path="/")
+        return response
 
     @app.get("/v1/ui", response_class=HTMLResponse, include_in_schema=False)
     async def task_ui() -> HTMLResponse:
