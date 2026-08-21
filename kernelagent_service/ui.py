@@ -448,6 +448,13 @@ _TASK_UI = r"""<!doctype html>
     .btn-small { min-height: 32px; padding: 5px 10px; font-size: 12px; }
 
     .workspace { min-width: 0; }
+    .upload-box { padding: 12px; border: 1px dashed #b9c7d3; border-radius: 10px; background: #f8fafc; }
+    .upload-box input { height: auto; padding: 0; border: 0; background: transparent; }
+    .upload-help { margin: 8px 0 0; color: var(--subtle); font-size: 10px; }
+    .upload-status { min-height: 18px; margin-top: 6px; color: var(--muted); font-size: 11px; }
+    .upload-status.error { color: var(--red); }
+    .upload-support { margin: 9px 0 0; padding-top: 9px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .upload-support strong { color: #465565; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
     .metric {
       min-height: 86px;
@@ -612,12 +619,21 @@ _TASK_UI = r"""<!doctype html>
     <main class="shell">
       <aside class="panel composer">
         <div class="panel-head">
-          <div><p class="eyebrow">New workload</p><h1>创建 Kernel 任务</h1></div>
+          <div><p class="eyebrow">New Workload</p><h1>创建 Kernel 任务</h1></div>
           <span class="badge">CUDA</span>
         </div>
         <form id="task-form" class="form">
           <div class="field">
-            <label for="pytorch-code">PyTorch 参考实现 <span class="hint">必填</span></label>
+            <label for="submission-file">Candidate submission <span class="hint">optional</span></label>
+            <div class="upload-box">
+              <input id="submission-file" type="file" accept=".py,.cu,.cpp,.cc,.cxx,.c,.json,.zip,.tar.gz,.tgz">
+              <p class="upload-help">Accepts Python run() sources, C/C++ or CUDA sources, JSON solutions, and multi-file .zip/.tar.gz/.tgz archives. Archives must contain submission.py or a PyBind host entry point.</p>
+              <div id="upload-status" class="upload-status" aria-live="polite"></div>
+              <p class="upload-support"><strong>Currently supported:</strong> <code>.py</code> with top-level <code>run()</code>; <code>.cpp</code>/<code>.cc</code>/<code>.cxx</code>/<code>.c</code> with <code>run()</code> and <code>PYBIND11_MODULE</code>; standalone <code>.cu</code>; SOL-style <code>.json</code> with <code>spec</code> and <code>sources</code>; and <code>.zip</code>/<code>.tar.gz</code>/<code>.tgz</code> containing <code>submission.py</code> or a PyBind host entry point. These formats are normalized and supplied to the generation agent as candidate source; native SOL compilation and evaluation are not yet available.</p>
+            </div>
+          </div>
+          <div class="field">
+            <label for="pytorch-code">PyTorch 参考实现 <span class="hint">correctness + workloads · 必填</span></label>
             <textarea id="pytorch-code" spellcheck="false" required>import torch
 from torch import nn
 
@@ -640,15 +656,21 @@ def get_init_inputs():
               <select id="runner"><option value="claude">Claude Code</option><option value="pi">pi</option><option value="codex">Codex</option></select>
             </div>
             <div class="field">
-              <label for="language">Kernel 语言</label>
-              <select id="language"><option value="triton">Triton</option><option value="cutedsl">CuTe DSL</option></select>
+              <label for="target-hardware">Target Hardware</label>
+              <select id="target-hardware"><option value="H200">NVIDIA H200</option><option value="B200">NVIDIA B200</option><option value="H20">NVIDIA H20</option><option value="H100">NVIDIA H100</option><option value="A100">NVIDIA A100</option><option value="昇腾">昇腾</option><option value="寒武纪">寒武纪</option></select>
             </div>
           </div>
           <div class="field-row">
             <div class="field">
+              <label for="language">Kernel 语言</label>
+              <select id="language"><option value="triton">Triton</option><option value="cutedsl">CuTe DSL</option></select>
+            </div>
+            <div class="field">
               <label for="rounds">最大优化轮数</label>
               <input id="rounds" type="number" min="1" max="100" value="5">
             </div>
+          </div>
+          <div class="field-row">
             <div class="field">
               <label for="timeout">超时时间 <span class="hint">秒</span></label>
               <input id="timeout" type="number" min="30" max="86400" value="7200">
@@ -676,7 +698,7 @@ def get_init_inputs():
 
         <section class="panel task-panel">
           <div class="panel-head">
-            <div><p class="eyebrow">Work queue</p><h2>任务中心</h2></div>
+            <div><p class="eyebrow">Work Queue</p><h2>任务中心</h2></div>
             <div class="toolbar">
               <div id="tabs" class="tabs">
                 <button class="tab active" data-filter="all" type="button">全部</button>
@@ -692,7 +714,7 @@ def get_init_inputs():
 
         <section id="detail" class="panel detail hidden">
           <div class="panel-head">
-            <div><p class="eyebrow">Task detail</p><h2 id="detail-title" class="mono">—</h2></div>
+            <div><p class="eyebrow">Task Detail</p><h2 id="detail-title" class="mono">—</h2></div>
             <div class="detail-actions">
               <button id="cancel-btn" class="btn btn-small btn-danger" type="button">取消任务</button>
               <button id="close-detail" class="btn btn-small" type="button">关闭</button>
@@ -727,7 +749,7 @@ def get_init_inputs():
   <script>
     'use strict';
 
-    const state = { tasks: [], filter: 'all', selectedId: null, health: null };
+    const state = { tasks: [], filter: 'all', selectedId: null, health: null, uploadName: null, uploadContent: null, uploadError: null, hardwareTouched: false };
     const terminal = new Set(['succeeded', 'failed', 'canceled', 'timed_out', 'lost']);
     const abnormal = new Set(['failed', 'timed_out', 'lost', 'canceled']);
     const $ = (id) => document.getElementById(id);
@@ -801,6 +823,13 @@ def get_init_inputs():
         $('metric-gpus').textContent = health.gpu_workers.length;
         $('metric-running').textContent = health.running_tasks;
         $('metric-queue').textContent = `${health.queue_size} / ${health.queue_capacity}`;
+        if (!state.hardwareTouched && health.target_hardware) {
+          const target = $('target-hardware');
+          if (![...target.options].some((option) => option.value === health.target_hardware)) {
+            target.add(new Option(health.target_hardware, health.target_hardware));
+          }
+          target.value = health.target_hardware;
+        }
       } catch (error) {
         $('health-chip').className = 'health-chip bad';
         $('health-text').textContent = '连接失败';
@@ -847,6 +876,14 @@ def get_init_inputs():
       return `<div class="summary-item"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`;
     }
 
+    function isVisibleArtifact(artifact) {
+      const path = artifact.relative_path || artifact.name || '';
+      const parts = path.split('/');
+      if (parts.some((part) => part.startsWith('.run_') || part === '__pycache__')) return false;
+      return !['stdout.txt', 'stderr.txt'].includes((artifact.name || '').toLowerCase())
+        && !path.endsWith('.pyc');
+    }
+
     async function selectTask(taskId) {
       state.selectedId = taskId;
       renderTasks();
@@ -881,7 +918,7 @@ def get_init_inputs():
       $('task-error').innerHTML = task.error ? `<div class="error-box">${escapeHtml(task.error)}</div>` : '';
       $('result').textContent = task.result ? JSON.stringify(task.result, null, 2) : '任务尚未返回结果';
 
-      const artifacts = task.artifacts || [];
+      const artifacts = (task.artifacts || []).filter(isVisibleArtifact);
       $('artifact-count').textContent = `${artifacts.length} 个`;
       $('artifacts').innerHTML = artifacts.length ? artifacts.map((artifact) => `
         <div class="artifact">
@@ -899,6 +936,10 @@ def get_init_inputs():
 
     async function submitTask(event) {
       event.preventDefault();
+      if (state.uploadError) {
+        toast(`提交失败：${state.uploadError}`, 'error');
+        return;
+      }
       const button = $('submit-btn');
       button.disabled = true;
       button.textContent = '正在提交…';
@@ -908,7 +949,12 @@ def get_init_inputs():
         kernel_language: $('language').value,
         max_rounds: Number($('rounds').value),
         timeout_seconds: Number($('timeout').value),
+        target_hardware: $('target-hardware').value,
       };
+      if (state.uploadName) {
+        payload.submission_filename = state.uploadName;
+        payload.submission_content = state.uploadContent;
+      }
       const instructions = $('instructions').value.trim();
       const testCode = $('test-code').value.trim();
       if (instructions) payload.extra_instructions = instructions;
@@ -928,6 +974,56 @@ def get_init_inputs():
       }
     }
 
+    function fileExtension(name) {
+      const lower = name.toLowerCase();
+      if (lower.endsWith('.tar.gz')) return '.tar.gz';
+      const index = lower.lastIndexOf('.');
+      return index >= 0 ? lower.slice(index) : 'unknown';
+    }
+
+    function encodeBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 32768) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+      }
+      return btoa(binary);
+    }
+
+    async function loadSubmissionFile(event) {
+      const file = event.target.files[0];
+      const status = $('upload-status');
+      state.uploadName = null;
+      state.uploadContent = null;
+      state.uploadError = null;
+      status.className = 'upload-status';
+      status.textContent = '';
+      if (!file) return;
+      const extension = fileExtension(file.name);
+      const supported = new Set(['.py', '.cu', '.cpp', '.cc', '.cxx', '.c', '.json', '.zip', '.tar.gz', '.tgz']);
+      if (!supported.has(extension)) {
+        state.uploadError = `${extension} format is currently not supported`;
+        status.classList.add('error');
+        status.textContent = state.uploadError;
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        state.uploadError = 'Uploaded file is too large; the current limit is 10 MB';
+        status.classList.add('error');
+        status.textContent = state.uploadError;
+        return;
+      }
+      try {
+        state.uploadName = file.name;
+        state.uploadContent = encodeBase64(await file.arrayBuffer());
+        status.textContent = `${file.name} loaded as the candidate solution`;
+      } catch (_) {
+        state.uploadError = 'The selected file could not be read';
+        status.classList.add('error');
+        status.textContent = state.uploadError;
+      }
+    }
+
     async function cancelSelected() {
       if (!state.selectedId || !window.confirm('确定取消这个任务？运行中的 runner 及其子进程会被终止。')) return;
       try {
@@ -944,6 +1040,8 @@ def get_init_inputs():
     }
 
     $('task-form').addEventListener('submit', submitTask);
+    $('submission-file').addEventListener('change', loadSubmissionFile);
+    $('target-hardware').addEventListener('change', () => { state.hardwareTouched = true; });
     $('refresh-btn').addEventListener('click', async () => { await Promise.all([loadHealth(), loadTasks()]); toast('已刷新'); });
     $('cancel-btn').addEventListener('click', cancelSelected);
     $('close-detail').addEventListener('click', () => { state.selectedId = null; $('detail').classList.add('hidden'); renderTasks(); });

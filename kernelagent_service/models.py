@@ -72,6 +72,8 @@ class TaskOptions(BaseModel):
 class KernelGenerationRequest(BaseModel):
     """Public request for compiling a PyTorch reference into a GPU kernel."""
 
+    submission_filename: str | None = Field(default=None, max_length=255)
+    submission_content: str | None = Field(default=None, max_length=14_000_000)
     pytorch_code: str = Field(
         min_length=1,
         max_length=500_000,
@@ -89,6 +91,57 @@ class KernelGenerationRequest(BaseModel):
     max_rounds: int = Field(default=5, ge=1, le=100)
     timeout_seconds: int | None = Field(default=None, ge=30, le=86_400)
     extra_instructions: str | None = Field(default=None, max_length=8_000)
+    target_hardware: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("submission_filename")
+    @classmethod
+    def validate_submission_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        name = PurePosixPath(value).name
+        lower = name.lower()
+        suffix = next(
+            (
+                item
+                for item in (
+                    ".tar.gz",
+                    ".tgz",
+                    ".cpp",
+                    ".cxx",
+                    ".json",
+                    ".zip",
+                    ".py",
+                    ".cu",
+                    ".cc",
+                    ".c",
+                )
+                if lower.endswith(item)
+            ),
+            PurePosixPath(lower).suffix or "unknown",
+        )
+        if suffix not in {
+            ".py",
+            ".cu",
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".c",
+            ".json",
+            ".zip",
+            ".tar.gz",
+            ".tgz",
+        }:
+            shown = suffix or "unknown"
+            raise ValueError(f"{shown} format is currently not supported")
+        return name
+
+    @model_validator(mode="after")
+    def validate_submission_pair(self) -> "KernelGenerationRequest":
+        if bool(self.submission_filename) != bool(self.submission_content):
+            raise ValueError(
+                "submission_filename and submission_content must be provided together"
+            )
+        return self
 
     @field_validator("pytorch_code")
     @classmethod
@@ -119,10 +172,24 @@ class KernelGenerationRequest(BaseModel):
             cls._parse_python(value, "test_code")
         return value
 
-    def to_task_request(self) -> "CreateTaskRequest":
+    def to_task_request(
+        self,
+        candidate_files: list[InputFile] | None = None,
+        candidate_entrypoint: str | None = None,
+        candidate_format: str | None = None,
+    ) -> "CreateTaskRequest":
         files = [InputFile(path="problem.py", content=self.pytorch_code)]
         if self.test_code:
             files.append(InputFile(path="custom_test.py", content=self.test_code))
+        files.extend(candidate_files or [])
+        candidate_guidance = ""
+        if candidate_entrypoint:
+            candidate_guidance = (
+                f" Start from the uploaded {candidate_format or 'kernel'} candidate at "
+                f"input/{candidate_entrypoint}; preserve its run() interface where "
+                "applicable, validate it against problem.py, and improve or translate it "
+                "to the selected kernel language."
+            )
         return CreateTaskRequest(
             operation=Operation.GENERATE,
             runner_backend=self.runner_backend,
@@ -130,6 +197,7 @@ class KernelGenerationRequest(BaseModel):
                 "Generate a verified, high-performance GPU implementation of the "
                 "uploaded PyTorch reference. Benchmark and refine it; do not use "
                 "PyTorch as a fallback in the generated kernel."
+                + candidate_guidance
             ),
             files=files,
             entrypoint="problem.py",
@@ -253,3 +321,4 @@ class HealthResponse(BaseModel):
     queue_capacity: int
     gpu_workers: list[str]
     running_tasks: int
+    target_hardware: str

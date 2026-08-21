@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -253,8 +256,21 @@ def test_task_ui_is_served_with_dashboard_and_security_headers(tmp_path: Path) -
         assert '<div class="brand-name">Anvil</div>' in response.text
         assert 'class="console-link" href="/v1/console">Console</a>' in response.text
         assert "创建 Kernel 任务" in response.text
+        assert 'id="submission-file"' in response.text
+        assert 'accept=".py,.cu,.cpp,.cc,.cxx,.c,.json,.zip,.tar.gz,.tgz"' in response.text
+        assert "format is currently not supported" in response.text
+        assert "Currently supported:" in response.text
+        assert "native SOL compilation and evaluation are not yet available" in response.text
+        assert 'id="target-hardware"' in response.text
+        assert '<option value="H20">' in response.text
+        assert '<option value="B200">' in response.text
+        assert '<option value="昇腾">' in response.text
+        assert '<option value="寒武纪">' in response.text
         assert 'id="runner"' in response.text
         assert "runner_backend: $('runner').value" in response.text
+        assert "function isVisibleArtifact(artifact)" in response.text
+        assert "part.startsWith('.run_')" in response.text
+        assert "'stdout.txt', 'stderr.txt'" in response.text
         assert "fetch(path" in response.text
         assert "/v1/tasks" in response.text
 
@@ -321,6 +337,7 @@ def test_admin_dashboard_reports_users_jobs_and_infrastructure(tmp_path: Path) -
                 assert payload["jobs"]["succeeded"] == 1
                 assert payload["jobs"]["active"] == 0
                 assert payload["infrastructure"]["gpu_workers"] == 1
+                assert payload["infrastructure"]["target_hardware"] == "H200"
 
                 forbidden = await general.get("/v1/console/stats")
                 assert forbidden.status_code == 403
@@ -578,6 +595,158 @@ def test_rejects_invalid_pytorch_problem_and_missing_gpu(tmp_path: Path) -> None
                     json={"pytorch_code": PYTORCH_CODE},
                 )
                 assert unavailable.status_code == 503
+
+    asyncio.run(scenario())
+
+
+def test_upload_format_and_target_hardware_are_enforced(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = replace(make_settings(tmp_path), target_hardware="B200")
+        app = create_app(settings, FakeRunner())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                supported = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "submission_filename": "submission.py",
+                        "submission_content": base64.b64encode(
+                            b"def run(x):\n    return x\n"
+                        ).decode(),
+                        "pytorch_code": PYTORCH_CODE,
+                        "target_hardware": "B200",
+                    },
+                )
+                assert supported.status_code == 202
+
+                unsupported = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "submission_filename": "kernel.txt",
+                        "submission_content": base64.b64encode(b"kernel").decode(),
+                        "pytorch_code": PYTORCH_CODE,
+                        "target_hardware": "B200",
+                    },
+                )
+                assert unsupported.status_code == 422
+                assert ".txt format is currently not supported" in unsupported.text
+
+                unavailable = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "submission_filename": "submission.py",
+                        "submission_content": base64.b64encode(
+                            b"def run(x):\n    return x\n"
+                        ).decode(),
+                        "pytorch_code": PYTORCH_CODE,
+                        "target_hardware": "H20",
+                    },
+                )
+                assert unavailable.status_code == 409
+                assert unavailable.json()["detail"] == (
+                    "No H20 hardware is available on this server."
+                )
+
+                health = (await client.get("/healthz")).json()
+                assert health["target_hardware"] == "B200"
+
+    asyncio.run(scenario())
+
+
+def test_cpp_json_and_archive_candidates_are_materialized(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner = FakeRunner()
+        app = create_app(make_settings(tmp_path), runner)
+        solution = {
+            "spec": {
+                "languages": ["triton"],
+                "entry_point": "kernel.py::run",
+                "destination_passing_style": False,
+            },
+            "sources": [{"path": "kernel.py", "content": "def run(x):\n    return x\n"}],
+        }
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("submission.py", "def run(x):\n    return x\n")
+            archive.writestr("helper.py", "VALUE = 1\n")
+        cpp = b"""#include <torch/extension.h>
+void run(torch::Tensor x) {}
+PYBIND11_MODULE(benchmark_kernel, m) { m.def("run", &run); }
+"""
+
+        candidates = [
+            ("binding.cpp", cpp),
+            ("solution.json", json.dumps(solution).encode()),
+            ("solution.zip", archive_buffer.getvalue()),
+            ("kernel.cu", b"__global__ void kernel() {}\n"),
+        ]
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                task_ids = []
+                for filename, content in candidates:
+                    response = await client.post(
+                        "/v1/tasks",
+                        json={
+                            "submission_filename": filename,
+                            "submission_content": base64.b64encode(content).decode(),
+                            "pytorch_code": PYTORCH_CODE,
+                        },
+                    )
+                    assert response.status_code == 202, response.text
+                    task_ids.append(response.json()["task_id"])
+                for task_id in task_ids:
+                    await wait_for_terminal(client, task_id)
+
+        uploaded = [{item.path for item in request.files} for request in runner.requests]
+        assert "candidate/binding.cpp" in uploaded[0]
+        assert {"candidate/solution.json", "candidate/kernel.py"} <= uploaded[1]
+        assert {"candidate/submission.py", "candidate/helper.py"} <= uploaded[2]
+        assert "candidate/kernel.cu" in uploaded[3]
+        assert "input/candidate/" in runner.requests[2].problem
+
+    asyncio.run(scenario())
+
+
+def test_archive_rejects_path_traversal_and_missing_entrypoint(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = create_app(make_settings(tmp_path), FakeRunner())
+        archives = []
+        for path, content in [
+            ("../submission.py", "def run(x): return x\n"),
+            ("helper.py", "VALUE = 1\n"),
+        ]:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr(path, content)
+            archives.append(buffer.getvalue())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                traversal = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "submission_filename": "bad.zip",
+                        "submission_content": base64.b64encode(archives[0]).decode(),
+                        "pytorch_code": PYTORCH_CODE,
+                    },
+                )
+                assert traversal.status_code == 422
+                assert "unsafe path" in traversal.json()["detail"]
+
+                missing = await client.post(
+                    "/v1/tasks",
+                    json={
+                        "submission_filename": "bad.zip",
+                        "submission_content": base64.b64encode(archives[1]).decode(),
+                        "pytorch_code": PYTORCH_CODE,
+                    },
+                )
+                assert missing.status_code == 422
+                assert "requires submission.py" in missing.json()["detail"]
 
     asyncio.run(scenario())
 

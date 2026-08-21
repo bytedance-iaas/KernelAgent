@@ -67,6 +67,7 @@ Useful optional settings:
 | `KERNEL_AGENT_SESSION_TTL_SECONDS` | `86400` | Signed login-cookie lifetime |
 | `KERNEL_AGENT_ADMIN_USERNAME` | `admin` | Provisioned administrator username |
 | `KERNEL_AGENT_ADMIN_PASSWORD` | `kernelagent-admin` | Provisioned administrator password |
+| `KERNEL_AGENT_TARGET_HARDWARE` | `H200` | Hardware label accepted by task submissions |
 | `KERNEL_AGENT_PI_COMMAND` | `pi` | pi executable (only used when the agent is `pi`) |
 | `KERNEL_AGENT_PI_CONTEXT_WINDOW` | `200000` | Context window (tokens) advertised to pi for the gateway model |
 | `KERNEL_AGENT_PI_MAX_TOKENS` | `16384` | Max output tokens advertised to pi for the gateway model |
@@ -181,6 +182,36 @@ Request fields:
 | `max_rounds` | no | `5` | Maximum generation/refinement rounds |
 | `timeout_seconds` | no | service default | Per-task wall-clock timeout, 30–86400 seconds |
 | `extra_instructions` | no | — | Extra optimization constraints or hints |
+| `submission_filename` | no | — | Candidate filename; requires `submission_content` |
+| `submission_content` | no | — | Base64-encoded candidate file or archive |
+| `target_hardware` | no | server hardware | Requested hardware label; mismatches are rejected before queueing |
+
+### Candidate submission formats
+
+The PyTorch reference and candidate submission have separate roles. The
+reference (`pytorch_code`) defines correctness and concrete workloads in the
+KernelBench `Model`/`get_inputs()` contract. The optional candidate gives the
+agent an existing implementation to validate, optimize, or translate.
+
+Candidate formats follow the SOL-ExecBench kernel submission conventions:
+
+- `.py`: UTF-8 source with a top-level `run()` function.
+- `.cpp`, `.cc`, `.cxx`, or `.c`: a host entry point containing `run()` and
+  `PYBIND11_MODULE`. A standalone `.cu` is also accepted for KernelAgent's
+  parser/generator workflow.
+- `.json`: a solution object with `spec.languages`, a
+  `spec.entry_point` in `filename::function` form, and `sources` containing
+  relative UTF-8 file paths and contents.
+- `.zip`, `.tar.gz`, or `.tgz`: a multi-file submission containing exactly
+  one detectable entry point—either `submission.py` with top-level `run()`,
+  or one host C/C++ source containing `PYBIND11_MODULE`. CUDA implementation
+  files and additional Python modules may accompany it.
+
+Uploads are limited to 10 MB and 64 extracted files. Archive paths are
+normalized; traversal, links, special files, null bytes, duplicate paths,
+ambiguous entry points, and more than 100 MB of expanded content are rejected.
+Normalized sources are materialized below `input/candidate/` and included in
+the generation prompt alongside `input/problem.py`.
 
 The service materializes the reference as `input/problem.py` and invokes
 `/ka-kernel-gen input/problem.py` for Claude Code,

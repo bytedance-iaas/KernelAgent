@@ -70,6 +70,7 @@ class ServiceSettings:
     session_ttl_seconds: int = 86_400
     admin_username: str = "admin"
     admin_password: str = "kernelagent-admin"
+    target_hardware: str = "H200"
 
     @classmethod
     def from_env(cls) -> "ServiceSettings":
@@ -161,4 +162,5 @@ class ServiceSettings:
             admin_password=os.getenv(
                 "KERNEL_AGENT_ADMIN_PASSWORD", "kernelagent-admin"
             ),
+            target_hardware=os.getenv("KERNEL_AGENT_TARGET_HARDWARE", "H200").strip(),
         )

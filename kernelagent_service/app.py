@@ -31,6 +31,7 @@ from kernelagent_service.models import (
 )
 from kernelagent_service.runner import AgentRunner, create_runner
 from kernelagent_service.storage import TaskStore
+from kernelagent_service.submissions import normalize_submission
 from kernelagent_service.ui import (
     render_admin_console,
     render_auth_page,
@@ -219,6 +220,7 @@ def create_app(
                 "gpu_workers": len(settings.gpu_ids),
                 "queue_size": manager.queue.qsize(),
                 "queue_capacity": settings.queue_capacity,
+                "target_hardware": settings.target_hardware,
             },
         }
 
@@ -231,6 +233,7 @@ def create_app(
             queue_capacity=settings.queue_capacity,
             gpu_workers=list(settings.gpu_ids),
             running_tasks=manager.running_count,
+            target_hardware=settings.target_hardware,
         )
 
     @app.post(
@@ -241,8 +244,35 @@ def create_app(
     async def create_task(
         payload: KernelGenerationRequest, request: Request
     ) -> CreateTaskResponse:
+        if (
+            payload.target_hardware is not None
+            and payload.target_hardware.casefold()
+            != settings.target_hardware.casefold()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"No {payload.target_hardware} hardware is available on this server.",
+            )
+        candidate_files = None
+        candidate_entrypoint = None
+        candidate_format = None
+        if payload.submission_filename and payload.submission_content:
+            try:
+                (
+                    candidate_files,
+                    candidate_entrypoint,
+                    candidate_format,
+                ) = normalize_submission(
+                    payload.submission_filename, payload.submission_content
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
-            record = await manager.create(payload.to_task_request())
+            record = await manager.create(
+                payload.to_task_request(
+                    candidate_files, candidate_entrypoint, candidate_format
+                )
+            )
         except QueueCapacityError as exc:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         except NoGpuWorkersError as exc:
