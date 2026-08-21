@@ -2,10 +2,60 @@
 
 from __future__ import annotations
 
+import json
+
 
 def render_task_ui() -> str:
     """Return the self-contained task dashboard HTML."""
     return _TASK_UI
+
+
+def render_auth_page(next_path: str = "/v1/ui") -> str:
+    """Return the login and signup page."""
+    safe_next = json.dumps(
+        next_path if next_path.startswith("/") and not next_path.startswith("//") else "/v1/ui"
+    )
+    return _AUTH_PAGE.replace("__NEXT_PATH__", safe_next)
+
+
+def render_console_access_denied() -> str:
+    """Return a friendly page for authenticated non-admin users."""
+    return _CONSOLE_ACCESS_DENIED
+
+
+_CONSOLE_ACCESS_DENIED = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Console Access · Anvil</title>
+  <style>
+    :root{--bg:#edf2f7;--panel:#fff;--line:#d6e0e9;--text:#17212b;--muted:#667585;--accent:#f06431;--shadow:0 22px 65px rgba(45,64,82,.14)}
+    *{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh;display:grid;place-items:center;padding:24px;color:var(--text);background:radial-gradient(circle at 10% 0,rgba(240,100,49,.16),transparent 32rem),radial-gradient(circle at 100% 100%,rgba(36,118,200,.11),transparent 30rem),var(--bg);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{width:min(520px,100%);padding:48px;text-align:center;border:1px solid var(--line);border-radius:20px;background:var(--panel);box-shadow:var(--shadow)}.mark{width:48px;height:48px;margin:0 auto 24px;display:grid;place-items:center;border:1px solid rgba(240,100,49,.3);border-radius:14px;color:var(--accent);background:rgba(240,100,49,.08);font:700 18px ui-monospace,monospace}h1{margin:0;font-size:27px;letter-spacing:-.04em}p{margin:12px auto 28px;color:var(--muted)}a{display:inline-block;padding:10px 16px;border-radius:9px;color:#fff;background:linear-gradient(135deg,#ef7b45,var(--accent));text-decoration:none;font-weight:750}@media(max-width:560px){main{padding:38px 26px}}
+  </style>
+</head>
+<body><main><div class="mark">A</div><h1>Console Access Is Restricted</h1><p>Only admin users can access the console.</p><a href="/v1/ui">Return to the task UI</a></main></body>
+</html>"""
+
+
+_AUTH_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Sign In · Anvil</title>
+  <style>
+    :root{--bg:#edf2f7;--panel:#fff;--line:#d6e0e9;--text:#17212b;--muted:#667585;--accent:#f06431;--red:#c93649;--shadow:0 22px 65px rgba(45,64,82,.16)}
+    *{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh;display:grid;place-items:center;padding:24px;color:var(--text);background:radial-gradient(circle at 10% 0,rgba(240,100,49,.17),transparent 32rem),radial-gradient(circle at 100% 100%,rgba(36,118,200,.12),transparent 30rem),var(--bg);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    .shell{width:min(920px,100%);display:grid;grid-template-columns:1fr 1fr;overflow:hidden;border:1px solid var(--line);border-radius:20px;background:var(--panel);box-shadow:var(--shadow)}
+    .intro{padding:56px 48px;color:#fff;background:linear-gradient(145deg,#17212b,#263a4d);display:flex;flex-direction:column;justify-content:space-between}.mark{width:44px;height:44px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.25);border-radius:13px;color:#ff956d;background:rgba(255,255,255,.07);font:700 17px ui-monospace,monospace}.intro h1{margin:44px 0 12px;font-size:38px;line-height:1.08;letter-spacing:-.05em}.intro p{margin:0;color:#b8c7d4}.note{margin-top:70px;padding-top:18px;border-top:1px solid rgba(255,255,255,.13);font-size:12px}
+    .auth{padding:46px 44px}.tabs{display:flex;gap:5px;margin-bottom:30px;padding:4px;border-radius:10px;background:#eef3f7}.tab{flex:1;padding:9px;border:0;border-radius:7px;color:var(--muted);background:transparent;cursor:pointer;font:700 13px inherit}.tab.active{color:var(--text);background:#fff;box-shadow:0 2px 8px rgba(45,64,82,.1)}h2{margin:0;font-size:25px;letter-spacing:-.035em}.sub{margin:7px 0 25px;color:var(--muted)}label{display:block;margin:14px 0 7px;font-size:12px;font-weight:750}input{width:100%;height:44px;padding:0 12px;border:1px solid #c5d1dc;border-radius:9px;outline:none;font:inherit}input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,100,49,.1)}button[type=submit]{width:100%;height:44px;margin-top:22px;border:0;border-radius:9px;color:#fff;background:linear-gradient(135deg,#ef7b45,var(--accent));cursor:pointer;font-weight:750}.error{min-height:22px;margin-top:12px;color:var(--red);font-size:12px}.signup-copy{display:none}.auth.signup .login-copy{display:none}.auth.signup .signup-copy{display:block}@media(max-width:700px){.shell{grid-template-columns:1fr}.intro{padding:30px}.intro h1{margin-top:25px;font-size:30px}.note{display:none}.auth{padding:32px 28px}}
+  </style>
+</head>
+<body><main class="shell"><section class="intro"><div><div class="mark">A∿</div><h1>Build Faster Kernels.</h1><p>Sign in to your anvil workspace to create and monitor GPU optimization tasks.</p></div><p class="note">Self-service signup creates a general account. Administrators use the credentials supplied by the service owner.</p></section>
+  <section id="auth" class="auth"><div class="tabs"><button class="tab active" data-mode="login" type="button">Sign in</button><button class="tab" data-mode="signup" type="button">Create account</button></div><div class="login-copy"><h2>Welcome Back</h2><p class="sub">Enter your account details to continue.</p></div><div class="signup-copy"><h2>Create Your Account</h2><p class="sub">New accounts can access the task UI.</p></div>
+  <form id="form"><label for="username">Username</label><input id="username" autocomplete="username" minlength="3" maxlength="32" required><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="8" maxlength="256" required><button id="submit" type="submit">Sign in</button><div id="error" class="error" role="alert"></div></form></section></main>
+  <script>'use strict';let mode='login';const auth=document.getElementById('auth'),password=document.getElementById('password'),error=document.getElementById('error'),submit=document.getElementById('submit');document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{mode=tab.dataset.mode;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));auth.classList.toggle('signup',mode==='signup');password.autocomplete=mode==='signup'?'new-password':'current-password';submit.textContent=mode==='signup'?'Create account':'Sign in';error.textContent='';}));document.getElementById('form').addEventListener('submit',async event=>{event.preventDefault();error.textContent='';submit.disabled=true;try{const response=await fetch('/v1/auth/'+mode,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:password.value})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Unable to continue.');window.location.assign(__NEXT_PATH__);}catch(e){error.textContent=e.message;}finally{submit.disabled=false;}});</script>
+</body></html>"""
 
 
 _TASK_UI = r"""<!doctype html>
@@ -14,7 +64,7 @@ _TASK_UI = r"""<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>KernelAgent Console</title>
+  <title>Anvil</title>
   <style>
     :root {
       --bg: #edf2f7;
@@ -94,6 +144,9 @@ _TASK_UI = r"""<!doctype html>
     .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); }
     .health-chip.ok .health-dot { background: var(--green); box-shadow: 0 0 10px rgba(66, 211, 146, .75); }
     .health-chip.bad .health-dot { background: var(--red); }
+    .top-actions { display:flex; align-items:center; gap:9px; }
+    .signout { padding:7px 10px; border:0; border-radius:8px; color:var(--muted); background:transparent; cursor:pointer; font-size:12px; font-weight:700; }
+    .signout:hover { color:var(--text); background:#eef3f7; }
 
     .shell {
       width: min(1560px, 100%);
@@ -340,16 +393,16 @@ _TASK_UI = r"""<!doctype html>
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark">K∿</div>
+        <div class="brand-mark">A∿</div>
         <div>
-          <div class="brand-name">KernelAgent Console</div>
-          <div class="brand-sub">GPU kernel generation & optimization</div>
+          <div class="brand-name">Anvil</div>
+          <div class="brand-sub">GPU Kernel Generation & Optimization</div>
         </div>
       </div>
-      <div id="health-chip" class="health-chip">
+      <div class="top-actions"><div id="health-chip" class="health-chip">
         <span class="health-dot"></span>
         <span id="health-text">正在连接服务</span>
-      </div>
+      </div><button class="signout" type="button" onclick="fetch('/v1/auth/logout',{method:'POST'}).then(()=>location.assign('/v1/auth'))">退出</button></div>
     </header>
 
     <main class="shell">
